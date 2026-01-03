@@ -4,7 +4,7 @@ import requests
 from telegram.ext import Updater
 from telegram.ext import CommandHandler
 from telegram.ext import MessageHandler
-from telegram.ext import Filters
+from telegram.ext import filters
 
 from dotenv import load_dotenv
 
