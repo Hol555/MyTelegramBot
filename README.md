@@ -1,26 +1,16 @@
-# TelegramBot
+# Telegram MMO Bot v2.0
 
-<p align="center">
-<img alt="GitHub top language" src="https://img.shields.io/github/languages/top/AlexxSandbox/MyTelegramBot">
-<img alt="GitHub repo size" src="https://img.shields.io/github/repo-size/AlexxSandbox/MyTelegramBot">
-<img alt="GitHub last commit" src="https://img.shields.io/github/last-commit/AlexxSandbox/MyTelegramBot">
-</p>
+## 🚀 Railway Deploy
+1. Fork → Connect Railway
+2. Variables: `BOT_TOKEN`, `ADMIN_ID`, `ADMIN_USERNAME`
+3. ✅ Auto-deploy!
 
-My training project to explore the possibilities of the API Telegram.
+## 🎮 Features
+- ⚔️ PvP дуэли `@username 500`
+- ⛏️ Майнинг + КД
+- 🏪 25+ предметов
+- 👥 Кланы + рейды
+- 💎 Донат магазин
+- 📜 Промокоды: `LAUNCH100`, `DONAT500`
 
-#### Name
-
-@Alexx_assistant_bot
-
-#### What doing
-
-So far only the simplest queries:
-- current weather in any city
-- exchange rate in Russian Central bank
-
-Ideas:
-- control my car (engine/lock/unlock)
-
-#### Source
-
-https://github.com/python-telegram-bot/python-telegram-bot
+## 🎯 Команды
