@@ -1,308 +1,195 @@
-import os
-import random
 import asyncio
 import aiosqlite
+import nest_asyncio  # исправляет "event loop already running"
+import random
+from datetime import datetime, timedelta
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
-import nest_asyncio
+from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, CallbackQueryHandler
 
-nest_asyncio.apply()  # Исправляет "event loop already running"
+# =========================
+# Настройки
+# =========================
+BOT_TOKEN = "ВАШ_BOT_TOKEN"
+ADMIN_IDS = [7591100907]  # твой ID
+ADMIN_USERNAME = "soblaznss"
 
-# ---------------------- Настройки ----------------------
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", "7591100907"))  # soblaznss
-DB_PATH = "game_bot.db"
+# =========================
+# Включаем nest_asyncio
+# =========================
+nest_asyncio.apply()
 
-# ---------------------- Инициализация БД ----------------------
+# =========================
+# Инициализация базы данных
+# =========================
+DB_FILE = "game_bot.db"
+
 async def init_db():
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            coins INTEGER DEFAULT 0,
-            vip INTEGER DEFAULT 0,
-            items TEXT DEFAULT "",
-            level INTEGER DEFAULT 1,
-            exp INTEGER DEFAULT 0
-        )''')
-        await db.execute('''
-        CREATE TABLE IF NOT EXISTS duels (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            player1 INTEGER,
-            player2 INTEGER,
-            stake INTEGER,
-            winner INTEGER,
-            status TEXT DEFAULT "waiting"
-        )''')
-        await db.execute('''
-        CREATE TABLE IF NOT EXISTS expeditions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            type TEXT,
-            reward_coins INTEGER,
-            reward_items TEXT,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )''')
-        await db.execute('''
-        CREATE TABLE IF NOT EXISTS missions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            mission TEXT,
-            reward_coins INTEGER,
-            reward_items TEXT,
-            completed INTEGER DEFAULT 0
-        )''')
-        await db.execute('''
-        CREATE TABLE IF NOT EXISTS promocodes (
-            code TEXT PRIMARY KEY,
-            coins INTEGER,
-            vip INTEGER,
-            items TEXT
-        )''')
+    async with aiosqlite.connect(DB_FILE) as db:
+        await db.execute("""CREATE TABLE IF NOT EXISTS users(
+                            user_id INTEGER PRIMARY KEY,
+                            username TEXT,
+                            balance INTEGER DEFAULT 0,
+                            vip_until TEXT DEFAULT '',
+                            inventory TEXT DEFAULT '',
+                            duels_won INTEGER DEFAULT 0,
+                            duels_lost INTEGER DEFAULT 0
+                            )""")
+        await db.execute("""CREATE TABLE IF NOT EXISTS promo_codes(
+                            code TEXT PRIMARY KEY,
+                            currency INTEGER,
+                            uses_left INTEGER,
+                            expires_at TEXT
+                            )""")
         await db.commit()
+    print("✅ Database initialized")
 
-# ---------------------- Пользователь ----------------------
-async def add_user(user_id, username):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (user_id, username))
-        await db.commit()
-
-# ---------------------- Главные кнопки ----------------------
-def main_menu():
-    keyboard = [
-        [InlineKeyboardButton("🗺️ Экспедиция", callback_data="expedition")],
-        [InlineKeyboardButton("⚔ Дуэль", callback_data="duel")],
-        [InlineKeyboardButton("🏪 Магазин", callback_data="shop")],
-        [InlineKeyboardButton("🗡️ Миссии", callback_data="missions")],
-        [InlineKeyboardButton("🎖️ Профиль", callback_data="profile")],
-        [InlineKeyboardButton("🏆 Топ-10", callback_data="leaderboard")],
-        [InlineKeyboardButton("🎁 Промокод", callback_data="promocode")],
-        [InlineKeyboardButton("🛠️ Админ-панель", callback_data="admin")]
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-# ---------------------- Старт ----------------------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    await add_user(user.id, user.username)
-    await update.message.reply_text(
-        f"Привет, {user.first_name}! Добро пожаловать в игровой бот.",
-        reply_markup=main_menu()
-    )
-
-# ---------------------- Экспедиция ----------------------
-async def start_expedition(query):
-    user_id = query.from_user.id
-    expedition_types = {"Лёгкая": (5, 15), "Средняя": (10, 30), "Сложная": (20, 50)}
-    choice = random.choice(list(expedition_types.keys()))
-    min_r, max_r = expedition_types[choice]
-
-    await query.edit_message_text(f"🗺️ Экспедиция {choice} началась! ⏳ В пути...")
-    await asyncio.sleep(3)
-
-    reward_coins = random.randint(min_r, max_r)
-    items_list = ["Зелье здоровья", "Редкий камень", "Свиток опыта", "Древний артефакт"]
-    reward_items = random.choices(items_list, k=random.randint(0,2))
-    reward_items_str = ", ".join(reward_items) if reward_items else "Нет предметов"
-
-    # Случайное событие
-    event_chance = random.randint(1,100)
-    event_text = ""
-    if event_chance <= 20:  # 20% шанс
-        bonus = random.randint(5, 20)
-        reward_coins += bonus
-        event_text = f"\n✨ Случайное событие! Вы нашли бонус {bonus} монет!"
-
-    # Редкий сундук
-    chest_chance = random.randint(1,100)
-    chest_text = ""
-    if chest_chance <= 10:  # 10% шанс
-        chest_item = random.choice(items_list)
-        reward_items.append(chest_item)
-        reward_items_str = ", ".join(reward_items)
-        chest_text = f"\n🎁 Редкий сундук! Вы получили {chest_item}!"
-
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute('''
-            INSERT INTO expeditions (user_id, type, reward_coins, reward_items)
-            VALUES (?, ?, ?, ?)
-        ''', (user_id, choice, reward_coins, reward_items_str))
-        await db.execute('UPDATE users SET coins = coins + ? WHERE user_id = ?', (reward_coins, user_id))
-        current_items = await db.execute("SELECT items FROM users WHERE user_id=?", (user_id,))
-        row = await current_items.fetchone()
-        new_items = (row[0] + "," + reward_items_str) if row and row[0] else reward_items_str
-        await db.execute("UPDATE users SET items=? WHERE user_id=?", (new_items, user_id))
-        await db.commit()
-
-    await query.edit_message_text(
-        f"🗺️ Экспедиция завершена!\nТип: {choice}\n💰 Монеты: {reward_coins}\n🎁 Предметы: {reward_items_str}"
-        f"{event_text}{chest_text}"
-    )
-
-# ---------------------- Миссии ----------------------
-MISSIONS_LIST = {
-    "Собрать ресурсы": (10, ["Зелье здоровья"]),
-    "Победить монстров": (20, ["Свиток опыта"]),
-    "Исследовать пещеру": (30, ["Древний артефакт"])
-}
-
-async def missions(query):
-    user_id = query.from_user.id
-    mission_name = random.choice(list(MISSIONS_LIST.keys()))
-    reward_coins, reward_items_list = MISSIONS_LIST[mission_name]
-    reward_items_str = ", ".join(reward_items_list)
-
-    # Случайное событие
-    event_chance = random.randint(1,100)
-    event_text = ""
-    if event_chance <= 15:
-        bonus = random.randint(5, 15)
-        reward_coins += bonus
-        event_text = f"\n✨ Случайное событие! Доп. монеты: {bonus}"
-
-    await query.edit_message_text(f"🗡️ Миссия '{mission_name}' выполнена!\n💰 Монеты: {reward_coins}\n🎁 Предметы: {reward_items_str}{event_text}")
-
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute('INSERT INTO missions (user_id, mission, reward_coins, reward_items, completed) VALUES (?, ?, ?, ?, 1)',
-                         (user_id, mission_name, reward_coins, reward_items_str))
-        await db.execute('UPDATE users SET coins = coins + ? WHERE user_id = ?', (reward_coins, user_id))
-        current_items = await db.execute("SELECT items FROM users WHERE user_id=?", (user_id,))
-        row = await current_items.fetchone()
-        new_items = (row[0] + "," + reward_items_str) if row and row[0] else reward_items_str
-        await db.execute("UPDATE users SET items=? WHERE user_id=?", (new_items, user_id))
-        await db.commit()
-
-# ---------------------- Магазин ----------------------
-SHOP_ITEMS = {
-    "Зелье здоровья": "Восстанавливает здоровье",
-    "Редкий камень": "Используется для улучшений",
-    "Свиток опыта": "Даёт опыт для прокачки",
-    "Доспехи": "Увеличивает выносливость",
-    "Меч": "Увеличивает силу в дуэлях"
-}
-
-async def shop(query):
-    text = "🏪 Магазин:\n\n"
-    for name, desc in SHOP_ITEMS.items():
-        text += f"• {name} — {desc}\n"
-    await query.edit_message_text(text)
-
-# ---------------------- Профиль ----------------------
-async def profile(query):
-    user_id = query.from_user.id
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute("SELECT coins, vip, items, level, exp FROM users WHERE user_id=?", (user_id,))
-        row = await cursor.fetchone()
-    coins = row[0] if row else 0
-    vip = "Да" if row[1] else "Нет"
-    items = row[2] if row[2] else "Нет предметов"
-    level = row[3] if row else 1
-    exp = row[4] if row else 0
-    await query.edit_message_text(
-        f"🎖️ Профиль:\n💰 Монеты: {coins}\n👑 VIP: {vip}\n🎁 Предметы: {items}\n"
-        f"🏅 Уровень: {level}\n✨ Опыт: {exp}"
-    )
-
-# ---------------------- Топ-10 ----------------------
-async def leaderboard(query):
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute("SELECT username, coins FROM users ORDER BY coins DESC LIMIT 10")
-        rows = await cursor.fetchall()
-    text = "🏆 Топ-10 игроков:\n"
-    for i, row in enumerate(rows, 1):
-        text += f"{i}. {row[0]} — {row[1]} монет\n"
-    await query.edit_message_text(text)
-
-# ---------------------- Промокоды ----------------------
-PROMO_LIST = {
-    "WELCOME100": (100, 0, ""),
-    "VIPNOW": (0, 1, ""),
-    "TREASURE50": (50, 0, "Редкий камень")
-}
-
-async def promocode(query):
-    await query.edit_message_text("Введите промокод (например, WELCOME100):")
-    context = query._bot  # Получаем объект бота
-
-    async def get_code(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        code = update.message.text.upper()
-        if code in PROMO_LIST:
-            coins, vip, items = PROMO_LIST[code]
-            user_id = update.effective_user.id
-            async with aiosqlite.connect(DB_PATH) as db:
-                await db.execute("UPDATE users SET coins = coins + ?, vip = vip + ? WHERE user_id=?", (coins, vip, user_id))
-                if items:
-                    cursor = await db.execute("SELECT items FROM users WHERE user_id=?", (user_id,))
-                    row = await cursor.fetchone()
-                    new_items = (row[0] + "," + items) if row and row[0] else items
-                    await db.execute("UPDATE users SET items=? WHERE user_id=?", (new_items, user_id))
-                await db.commit()
-            await update.message.reply_text(f"🎉 Промокод активирован! Вы получили: {coins} монет, VIP: {vip}, предметы: {items}")
-        else:
-            await update.message.reply_text("❌ Неверный промокод.")
-        context.remove_handler(handler)  # Убираем после использования
-
-    handler = CommandHandler("text", get_code)
-    context.add_handler(handler)
-
-# ---------------------- Админ-панель ----------------------
-async def admin_panel(query):
-    if query.from_user.id != ADMIN_ID:
-        await query.edit_message_text("⛔ Только админ может открыть панель.")
-        return
-    keyboard = [
-        [InlineKeyboardButton("💎 Выдать валюту", callback_data="give_money")],
-        [InlineKeyboardButton("👑 Выдать VIP", callback_data="give_vip")],
-        [InlineKeyboardButton("⛔ Бан/Разбан", callback_data="ban_user")]
-    ]
-    await query.edit_message_text("🛠️ Админ-панель", reply_markup=InlineKeyboardMarkup(keyboard))
-
-# ---------------------- Дуэли ----------------------
-DUEL_QUEUE = []
-
-async def duel(query):
-    user_id = query.from_user.id
-    DUEL_QUEUE.append(user_id)
-    await query.edit_message_text("⚔ Вы в очереди на дуэль. Ожидаем противника...")
-    if len(DUEL_QUEUE) >= 2:
-        p1, p2 = DUEL_QUEUE.pop(0), DUEL_QUEUE.pop(0)
-        stake = random.randint(5, 20)
-        winner = random.choice([p1, p2])
-        async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute("UPDATE users SET coins = coins + ? WHERE user_id=?", (stake, winner))
-            await db.execute("UPDATE users SET coins = coins - ? WHERE user_id=?", (stake, p1 if winner==p2 else p2))
+# =========================
+# Вспомогательные функции
+# =========================
+async def get_user(user_id, username=None):
+    async with aiosqlite.connect(DB_FILE) as db:
+        async with db.execute("SELECT * FROM users WHERE user_id=?", (user_id,)) as cursor:
+            user = await cursor.fetchone()
+        if not user:
+            await db.execute("INSERT INTO users(user_id, username) VALUES(?,?)", (user_id, username))
             await db.commit()
-        await query.edit_message_text(f"⚔ Дуэль завершена! Победитель: {winner} (ставка {stake} монет)")
+            async with db.execute("SELECT * FROM users WHERE user_id=?", (user_id,)) as cursor:
+                user = await cursor.fetchone()
+        return user
 
-# ---------------------- Кнопки ----------------------
+async def update_balance(user_id, amount):
+    async with aiosqlite.connect(DB_FILE) as db:
+        await db.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (amount, user_id))
+        await db.commit()
+
+async def add_item(user_id, item):
+    async with aiosqlite.connect(DB_FILE) as db:
+        async with db.execute("SELECT inventory FROM users WHERE user_id=?", (user_id,)) as cursor:
+            inv = await cursor.fetchone()
+        inv_list = inv[0].split(",") if inv[0] else []
+        inv_list.append(item)
+        await db.execute("UPDATE users SET inventory=? WHERE user_id=?", (",".join(inv_list), user_id))
+        await db.commit()
+
+async def get_inventory(user_id):
+    async with aiosqlite.connect(DB_FILE) as db:
+        async with db.execute("SELECT inventory FROM users WHERE user_id=?", (user_id,)) as cursor:
+            inv = await cursor.fetchone()
+    return inv[0].split(",") if inv[0] else []
+
+# =========================
+# Магазин
+# =========================
+SHOP_ITEMS = {
+    "Меч": {"price": 100, "description": "Увеличивает силу в дуэлях"},
+    "Щит": {"price": 80, "description": "Снижает урон от дуэлей"},
+    "Зелье": {"price": 50, "description": "Восстанавливает 50 валюты"},
+    "Редкий сундук": {"price": 300, "description": "Содержит случайную награду"}
+}
+
+# =========================
+# Команды
+# =========================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = await get_user(update.effective_user.id, update.effective_user.username)
+    kb = [
+        [InlineKeyboardButton("Добыча", callback_data="mine")],
+        [InlineKeyboardButton("Профиль", callback_data="profile"),
+         InlineKeyboardButton("Топ 10", callback_data="top")],
+        [InlineKeyboardButton("Магазин", callback_data="shop")],
+        [InlineKeyboardButton("Админ-панель", callback_data="admin")],
+        [InlineKeyboardButton("Активировать промокод", callback_data="promo")]
+    ]
+    await update.message.reply_text("Главное меню:", reply_markup=InlineKeyboardMarkup(kb))
+
+# =========================
+# Кнопки
+# =========================
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    if query.data == "expedition":
-        await start_expedition(query)
-    elif query.data == "shop":
-        await shop(query)
-    elif query.data == "profile":
-        await profile(query)
-    elif query.data == "leaderboard":
-        await leaderboard(query)
-    elif query.data == "admin":
-        await admin_panel(query)
-    elif query.data == "duel":
-        await duel(query)
-    elif query.data == "missions":
-        await missions(query)
-    elif query.data == "promocode":
-        await promocode(query)
+    data = query.data
+    user_id = query.from_user.id
 
-# ---------------------- Основной цикл ----------------------
+    if data == "mine":
+        # Добыча с рандомом
+        gain = random.randint(10, 50)
+        await update_balance(user_id, gain)
+        msg = f"Вы добыли {gain} валюты!"
+        # Случайные сундуки
+        if random.random() < 0.1:
+            item = "Редкий сундук"
+            await add_item(user_id, item)
+            msg += f" Вы нашли {item}!"
+        await query.edit_message_text(msg)
+    
+    elif data == "profile":
+        user = await get_user(user_id)
+        inv = await get_inventory(user_id)
+        vip_status = f"VIP до {user[3]}" if user[3] else "Нет VIP"
+        text = f"Профиль @{user[1]}:\nБаланс: {user[2]}\nVIP: {vip_status}\nИнвентарь: {', '.join(inv) if inv else 'Пусто'}"
+        await query.edit_message_text(text)
+
+    elif data == "top":
+        # Топ 10 по балансу
+        async with aiosqlite.connect(DB_FILE) as db:
+            async with db.execute("SELECT username, balance FROM users ORDER BY balance DESC LIMIT 10") as cursor:
+                rows = await cursor.fetchall()
+        text = "🏆 Топ 10 по валюте:\n"
+        text += "\n".join([f"{i+1}. @{r[0]} — {r[1]}" for i,r in enumerate(rows)])
+        await query.edit_message_text(text)
+
+    elif data == "shop":
+        # Показываем магазин
+        kb = []
+        for item, info in SHOP_ITEMS.items():
+            kb.append([InlineKeyboardButton(f"{item} ({info['price']})", callback_data=f"shop_{item}")])
+        kb.append([InlineKeyboardButton("Вернуться в меню", callback_data="start")])
+        await query.edit_message_text("Магазин:", reply_markup=InlineKeyboardMarkup(kb))
+    
+    elif data.startswith("shop_"):
+        item_name = data[5:]
+        info = SHOP_ITEMS[item_name]
+        kb = [
+            [InlineKeyboardButton("Купить", callback_data=f"buy_{item_name}")],
+            [InlineKeyboardButton("Вернуться в магазин", callback_data="shop")]
+        ]
+        await query.edit_message_text(f"{item_name}\nЦена: {info['price']}\nОписание: {info['description']}", reply_markup=InlineKeyboardMarkup(kb))
+    
+    elif data.startswith("buy_"):
+        item_name = data[4:]
+        user = await get_user(user_id)
+        if user[2] >= SHOP_ITEMS[item_name]["price"]:
+            await update_balance(user_id, -SHOP_ITEMS[item_name]["price"])
+            await add_item(user_id, item_name)
+            await query.edit_message_text(f"Вы купили {item_name}!")
+        else:
+            await query.edit_message_text("Недостаточно валюты!")
+
+    elif data == "admin" and user_id in ADMIN_IDS:
+        kb = [
+            [InlineKeyboardButton("Выдать валюту", callback_data="admin_currency")],
+            [InlineKeyboardButton("Выдать VIP", callback_data="admin_vip")],
+            [InlineKeyboardButton("Бан", callback_data="admin_ban")],
+            [InlineKeyboardButton("Разбан", callback_data="admin_unban")],
+            [InlineKeyboardButton("Создать промокод", callback_data="admin_promo_create")],
+            [InlineKeyboardButton("Удалить промокод", callback_data="admin_promo_delete")],
+            [InlineKeyboardButton("Купить VIP", url=f"https://t.me/{ADMIN_USERNAME}")]
+        ]
+        await query.edit_message_text("Админ-панель:", reply_markup=InlineKeyboardMarkup(kb))
+
+    elif data == "start":
+        await start(update, context)
+
+# =========================
+# Основной запуск
+# =========================
 async def main():
     await init_db()
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_callback))
-    print("Бот запущен...")
+    print("✅ Bot is running")
     await app.run_polling()
 
 if __name__ == "__main__":
