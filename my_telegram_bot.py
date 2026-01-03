@@ -21,29 +21,37 @@ logger = logging.getLogger(__name__)
 # Глобальные состояния
 user_states = {}
 duel_rooms = {}
-waiting_duels = {}
+clan_bosses = {}  # {clan_id: {'boss_hp': 1000, 'participants': [], 'start_time': time}}
 
 async def init_db(application: Application):
     async with aiosqlite.connect('bot.db') as db:
+        # БАЗОВЫЕ ТАБЛИЦЫ
         await db.execute('''CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY, username TEXT, balance INTEGER DEFAULT 0,
             mining_cooldown REAL DEFAULT 0, expedition_cooldown REAL DEFAULT 0,
             wins INTEGER DEFAULT 0, losses INTEGER DEFAULT 0, ref_id INTEGER DEFAULT NULL,
             clan_id INTEGER DEFAULT NULL, clan_role TEXT DEFAULT 'member',
             last_daily REAL DEFAULT 0, total_earned INTEGER DEFAULT 0, vip_until REAL DEFAULT 0,
-            sword INTEGER DEFAULT 0, crown INTEGER DEFAULT 0, shield INTEGER DEFAULT 0
+            sword INTEGER DEFAULT 0, crown INTEGER DEFAULT 0, shield INTEGER DEFAULT 0,
+            pickaxe INTEGER DEFAULT 0, helmet INTEGER DEFAULT 0, armor INTEGER DEFAULT 0,
+            amulet INTEGER DEFAULT 0, ring INTEGER DEFAULT 0,
+            clan_power INTEGER DEFAULT 0, buffs TEXT DEFAULT '{}', debuffs TEXT DEFAULT '{}'
         )''')
         
+        # КЛАНЫ + БОССЫ + БАФЫ
         await db.execute('''CREATE TABLE IF NOT EXISTS clans (
             clan_id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, leader_id INTEGER,
             max_members INTEGER DEFAULT 15, current_members INTEGER DEFAULT 1,
-            treasury INTEGER DEFAULT 0, level INTEGER DEFAULT 1,
+            treasury INTEGER DEFAULT 0, level INTEGER DEFAULT 1, power INTEGER DEFAULT 0,
+            boss_active INTEGER DEFAULT 0, boss_hp INTEGER DEFAULT 0, boss_timer REAL DEFAULT 0,
+            buffs TEXT DEFAULT '{}', debuffs TEXT DEFAULT '{}',
             created_at REAL DEFAULT (strftime('%s','now'))
         )''')
         
         await db.execute('''CREATE TABLE IF NOT EXISTS clan_members (
             user_id INTEGER, clan_id INTEGER, role TEXT DEFAULT 'member',
-            joined_at REAL DEFAULT (strftime('%s','now')), PRIMARY KEY (user_id, clan_id)
+            joined_at REAL DEFAULT (strftime('%s','now')), power INTEGER DEFAULT 0,
+            PRIMARY KEY (user_id, clan_id)
         )''')
         
         await db.execute('''CREATE TABLE IF NOT EXISTS clan_requests (
@@ -51,33 +59,119 @@ async def init_db(application: Application):
             PRIMARY KEY (user_id, clan_id)
         )''')
         
+        # АДМИН ТАБЛИЦЫ
         await db.execute('''CREATE TABLE IF NOT EXISTS promos (
             code TEXT PRIMARY KEY, reward INTEGER, uses INTEGER DEFAULT 0, max_uses INTEGER
         )''')
         
-        await db.execute('''CREATE TABLE IF NOT EXISTS banned (user_id INTEGER PRIMARY KEY)''')
+        await db.execute('''CREATE TABLE IF NOT EXISTS banned (user_id INTEGER PRIMARY KEY, reason TEXT)''')
         
         await db.execute('''CREATE TABLE IF NOT EXISTS shop_items (
-            item_id INTEGER PRIMARY KEY, name TEXT, price INTEGER, emoji TEXT
+            item_id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, price INTEGER, 
+            emoji TEXT, description TEXT, type TEXT DEFAULT 'item'
         )''')
         
-        await db.executemany(
-            "INSERT OR IGNORE INTO promos (code, reward, max_uses) VALUES (?, ?, ?)",
-            [('WELCOME1000', 1000, 100), ('CLANSTART', 50000, 10)]
-        )
+        await db.execute('''CREATE TABLE IF NOT EXISTS vip_packages (
+            package_id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, price INTEGER,
+            duration_days INTEGER, multiplier REAL DEFAULT 2.0, description TEXT
+        )''')
         
-        await db.executemany(
-            "INSERT OR IGNORE INTO shop_items (item_id, name, price, emoji) VALUES (?, ?, ?, ?)",
-            [
-                (1, 'Легендарный меч', 500, '⚔️'),
-                (2, 'Королевская корона', 1000, '👑'),
-                (3, 'Абсолютный щит', 750, '🛡️')
-            ]
-        )
+        # ИНИЦИАЛИЗАЦИЯ ДАННЫХ
+        await db.executemany("INSERT OR IGNORE INTO promos (code, reward, max_uses) VALUES (?, ?, ?)",
+            [('WELCOME1000', 1000, 100), ('CLANSTART', 50000, 10), ('MINER2024', 2500, 50), ('LUCKYDAY', 5000, 20)])
+        
+        await db.executemany("INSERT OR IGNORE INTO shop_items (item_id, name, price, emoji, description, type) VALUES (?, ?, ?, ?, ?, ?)",
+            [(1, 'Легендарный меч', 500, '⚔️', '+50% к урону в дуэлях', 'item'),
+             (2, 'Королевская корона', 1000, '👑', '+25% ко всем доходам', 'item'),
+             (3, 'Абсолютный щит', 750, '🛡️', '+30% защиты в дуэлях', 'item'),
+             (9, 'Бронзовый сундук', 200, '📦', 'Рандом: 100-500₽ + предметы', 'chest')])
+        
+        await db.executemany("INSERT OR IGNORE INTO vip_packages (package_id, name, price, duration_days, multiplier, description) VALUES (?, ?, ?, ?, ?, ?)",
+            [(1, 'VIP 7 дней', 500, 7, 2.0, '+100% ко всем доходам'),
+             (2, 'VIP 30 дней', 1500, 30, 2.5, '+150% ко всем доходам + эксклюзив')])
+        
+        # ТЕСТОВЫЕ КЛАНЫ
+        await db.executemany("INSERT OR IGNORE INTO clans (clan_id, name, leader_id, power) VALUES (?, ?, ?, ?)",
+            [(1, 'ИМПЕРИЯ', 123456789, 50000),
+             (2, 'ЛЕГЕНДЫ', 987654321, 45000)])
+        
         await db.commit()
         logger.info("✅ База данных инициализирована")
 
-# Утилиты
+# 🛠️ КЛАНОВЫЕ ФУНКЦИИ (ПОЛНЫЕ)
+async def get_user_clan(user_id):
+    user = await get_user_data(user_id)
+    return user[8] if user else None  # clan_id
+
+async def join_clan_by_id(user_id, clan_id):
+    clan = await get_clan_data(clan_id)
+    if not clan:
+        return False, "❌ Клан не найден!"
+    
+    user_clan = await get_user_clan(user_id)
+    if user_clan:
+        return False, "❌ Вы уже в клане!"
+    
+    if clan[4] >= clan[3]:  # current_members >= max_members
+        return False, "❌ Клан полный!"
+    
+    async with aiosqlite.connect('bot.db') as db:
+        await db.execute('UPDATE clans SET current_members = current_members + 1 WHERE clan_id = ?', (clan_id,))
+        await db.execute('UPDATE users SET clan_id = ? WHERE user_id = ?', (clan_id, user_id))
+        await db.execute('INSERT INTO clan_members (user_id, clan_id) VALUES (?, ?)', (user_id, clan_id))
+        await db.commit()
+    return True, f"✅ Вступили в **[{clan[1]}]**!"
+
+async def create_clan(user_id, clan_name):
+    async with aiosqlite.connect('bot.db') as db:
+        try:
+            clan_id = int(time.time())
+            await db.execute('INSERT INTO clans (clan_id, name, leader_id, current_members) VALUES (?, ?, ?, 1)', 
+                           (clan_id, clan_name, user_id))
+            await db.execute('UPDATE users SET clan_id = ? WHERE user_id = ?', (clan_id, user_id))
+            await db.execute('INSERT INTO clan_members (user_id, clan_id, role) VALUES (?, ?, "leader")', (user_id, clan_id))
+            await db.commit()
+            return True, f"🏰 **{clan_name}** создан! ID: `{clan_id}`"
+        except:
+            return False, "❌ Ошибка создания клана!"
+
+async def get_all_clans():
+    async with aiosqlite.connect('bot.db') as db:
+        async with db.execute('SELECT clan_id, name, power, current_members, max_members FROM clans ORDER BY power DESC LIMIT 20') as cursor:
+            return await cursor.fetchall()
+
+# 🛠️ АДМИН УТИЛИТЫ (исправленные)
+async def admin_get_all_promocodes():
+    async with aiosqlite.connect('bot.db') as db:
+        async with db.execute('SELECT * FROM promos') as cursor:
+            return await cursor.fetchall()
+
+async def admin_get_all_shop_items():
+    async with aiosqlite.connect('bot.db') as db:
+        async with db.execute('SELECT * FROM shop_items ORDER BY item_id') as cursor:
+            return await cursor.fetchall()
+
+def admin_shop_menu(items):
+    keyboard = []
+    for item in items[:8]:
+        keyboard.append([InlineKeyboardButton(f"{item[3]} {item[1]} ({item[2]}₽)", callback_data=f"admin_shop_view_{item[0]}")])
+    keyboard.extend([
+        [InlineKeyboardButton("➕ Добавить", callback_data="admin_shop_add")],
+        [InlineKeyboardButton("🔙 Админ", callback_data="admin_main")]
+    ])
+    return InlineKeyboardMarkup(keyboard)
+
+def admin_promo_menu(promocodes):
+    keyboard = []
+    for promo in promocodes:
+        keyboard.append([InlineKeyboardButton(f"{promo[0]} ({promo[1]}₽)", callback_data=f"admin_promo_view_{promo[0]}")])
+    keyboard.extend([
+        [InlineKeyboardButton("➕ Добавить", callback_data="admin_promo_add")],
+        [InlineKeyboardButton("🔙 Админ", callback_data="admin_main")]
+    ])
+    return InlineKeyboardMarkup(keyboard)
+
+# 🎮 ОСНОВНЫЕ УТИЛИТЫ
 async def get_user_data(user_id):
     async with aiosqlite.connect('bot.db') as db:
         async with db.execute('SELECT * FROM users WHERE user_id = ?', (user_id,)) as cursor:
@@ -89,9 +183,14 @@ async def get_user_by_username(username):
             row = await cursor.fetchone()
             return row[0] if row else None
 
-async def get_all_users():
+async def get_top_users():
     async with aiosqlite.connect('bot.db') as db:
         async with db.execute('SELECT user_id, username, balance FROM users ORDER BY balance DESC LIMIT 10') as cursor:
+            return await cursor.fetchall()
+
+async def get_top_clans():
+    async with aiosqlite.connect('bot.db') as db:
+        async with db.execute('SELECT c.clan_id, c.name, c.power, c.level FROM clans c ORDER BY c.power DESC LIMIT 10') as cursor:
             return await cursor.fetchall()
 
 async def update_user_balance(user_id, amount):
@@ -100,44 +199,93 @@ async def update_user_balance(user_id, amount):
                         (amount, abs(amount), user_id))
         await db.commit()
 
-async def set_cooldown(user_id, cooldown_type, duration):
-    async with aiosqlite.connect('bot.db') as db:
-        await db.execute(f'UPDATE users SET {cooldown_type} = ? WHERE user_id = ?', 
-                        (time.time() + duration, user_id))
-        await db.commit()
-
-async def can_use_cooldown(user_id, cooldown_index):
+async def is_vip(user_id):
     user = await get_user_data(user_id)
-    if not user:
-        return True
-    return time.time() >= user[cooldown_index]
+    return user and time.time() < user[12]
+
+async def get_vip_multiplier(user_id):
+    return 2.0 if await is_vip(user_id) else 1.0
 
 async def is_banned(user_id):
     async with aiosqlite.connect('bot.db') as db:
         async with db.execute('SELECT 1 FROM banned WHERE user_id = ?', (user_id,)) as cursor:
             return await cursor.fetchone() is not None
 
-async def ban_user(user_id):
+async def get_clan_data(clan_id):
     async with aiosqlite.connect('bot.db') as db:
-        await db.execute('INSERT OR IGNORE INTO banned (user_id) VALUES (?)', (user_id,))
+        async with db.execute('SELECT * FROM clans WHERE clan_id = ?', (clan_id,)) as cursor:
+            return await cursor.fetchone()
+
+# 🛠️ КУЛДАУНЫ (исправлено)
+async def set_cooldown(user_id, cooldown_field, cooldown_seconds):
+    async with aiosqlite.connect('bot.db') as db:
+        await db.execute(f'UPDATE users SET {cooldown_field} = ? WHERE user_id = ?', 
+                        (time.time() + cooldown_seconds, user_id))
         await db.commit()
 
-async def unban_user(user_id):
-    async with aiosqlite.connect('bot.db') as db:
-        await db.execute('DELETE FROM banned WHERE user_id = ?', (user_id,))
-        await db.commit()
-
-async def give_item(user_id, item_id, quantity=1):
-    async with aiosqlite.connect('bot.db') as db:
-        item_columns = ['sword', 'crown', 'shield']
-        if 1 <= item_id <= 3:
-            column = item_columns[item_id-1]
-            await db.execute(f'UPDATE users SET {column} = {column} + ? WHERE user_id = ?', (quantity, user_id))
-            await db.commit()
-            return True
+async def can_use_cooldown(user_id, cooldown_index):
+    user = await get_user_data(user_id)
+    if not user:
         return False
+    cooldown_time = user[cooldown_index]  # 3 = mining_cooldown
+    return time.time() >= cooldown_time
 
-# Админ состояния
+async def mining_logic(user_id):
+    user = await get_user_data(user_id)
+    vip_mult = await get_vip_multiplier(user_id)
+    pickaxe_bonus = user[16] * 0.5 if user[16] else 0
+    
+    base_reward = random.randint(50, 150) * vip_mult
+    total_reward = int(base_reward * (1 + pickaxe_bonus))
+    
+    await update_user_balance(user_id, total_reward)
+    await set_cooldown(user_id, 'mining_cooldown', 300)
+    return total_reward
+
+# МЕНЮ
+def main_menu(is_admin=False):
+    keyboard = [
+        [KeyboardButton("⚔️ Дуэли"), KeyboardButton("🛒 Магазин")],
+        [KeyboardButton("⛏️ Майнинг"), KeyboardButton("🗺️ Экспедиция")],
+        [KeyboardButton("💰 Баланс"), KeyboardButton("👥 Кланы")],
+        [KeyboardButton("🎁 Промокод"), KeyboardButton("📊 Статистика")]
+    ]
+    if is_admin:
+        keyboard.append([KeyboardButton("👑 Админ")])
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def admin_main_menu():
+    keyboard = [
+        [KeyboardButton("👤 Игроки"), KeyboardButton("🛒 Магазин")],
+        [KeyboardButton("🎁 Промокоды"), KeyboardButton("⭐ VIP")],
+        [KeyboardButton("🔨 Бан/Разбан"), KeyboardButton("🏰 Кланы")],
+        [KeyboardButton("📊 Статистика"), KeyboardButton("🔙 Главное")]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def clan_menu():
+    keyboard = [
+        [InlineKeyboardButton("🏆 Топ кланов", callback_data="clan_top")],
+        [InlineKeyboardButton("🏰 Мой клан", callback_data="clan_info")],
+        [InlineKeyboardButton("🔍 Поиск кланов", callback_data="clan_search")],
+        [InlineKeyboardButton("👥 Создать клан", callback_data="clan_create")],
+        [InlineKeyboardButton("📝 Вступить по ID", callback_data="clan_join_id")],
+        [InlineKeyboardButton("⚔️ Босс", callback_data="clan_boss")],
+        [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def clan_top_menu(clans):
+    keyboard = []
+    for clan_id, name, power, members, max_members in clans:
+        keyboard.append([InlineKeyboardButton(
+            f"🏆 [{name}] Сила:{power:,} ({members}/{max_members})", 
+            callback_data=f"clan_view_{clan_id}"
+        )])
+    keyboard.append([InlineKeyboardButton("🔙 Кланы", callback_data="clan_menu")])
+    return InlineKeyboardMarkup(keyboard)
+
+# 🛠️ СОСТОЯНИЯ
 def set_user_state(user_id, state, data=None):
     user_states[user_id] = {'state': state, 'data': data or {}}
 
@@ -147,87 +295,7 @@ def get_user_state(user_id):
 def clear_user_state(user_id):
     user_states.pop(user_id, None)
 
-# Меню
-def main_menu():
-    keyboard = [
-        [KeyboardButton("⚔️ Дуэли"), KeyboardButton("🛒 Магазин")],
-        [KeyboardButton("⛏️ Майнинг"), KeyboardButton("🗺️ Экспедиция")],
-        [KeyboardButton("💰 Баланс"), KeyboardButton("👥 Кланы")],
-        [KeyboardButton("🎁 Промокод"), KeyboardButton("📊 Статистика")]
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-def admin_main_menu():
-    keyboard = [
-        [KeyboardButton("💰 Валюта"), KeyboardButton("⭐ VIP/Предметы")],
-        [KeyboardButton("🔨 Бан"), KeyboardButton("✅ Разбан")],
-        [KeyboardButton("👥 Топ игроков"), KeyboardButton("📊 Статистика")],
-        [KeyboardButton("🔙 Главное меню")]
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-def shop_menu():
-    keyboard = [
-        [InlineKeyboardButton("⚔️ Легендарный меч (500₽)", callback_data="shop_1")],
-        [InlineKeyboardButton("👑 Королевская корона (1000₽)", callback_data="shop_2")],
-        [InlineKeyboardButton("🛡️ Абсолютный щит (750₽)", callback_data="shop_3")],
-        [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-def duel_menu():
-    keyboard = [
-        [InlineKeyboardButton("🔍 Искать дуэль", callback_data="duel_search")],
-        [InlineKeyboardButton("📋 Активные комнаты", callback_data="duel_rooms")],
-        [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-async def duel_rooms_menu(rooms):
-    keyboard = []
-    for room_id, room_data in rooms.items():
-        host_data = await get_user_data(room_data['host_id'])
-        if host_data:
-            username = host_data[1] or f"user{room_data['host_id']}"
-        else:
-            username = f"user{room_data['host_id']}"
-        keyboard.append([InlineKeyboardButton(
-            f"Комната {room_id}: @{username} {room_data['bet']}₽", 
-            callback_data=f"join_room_{room_id}"
-        )])
-    keyboard.append([InlineKeyboardButton("🔍 Искать дуэль", callback_data="duel_search")])
-    keyboard.append([InlineKeyboardButton("🔙 Дуэли", callback_data="duel_back")])
-    return InlineKeyboardMarkup(keyboard)
-
-# Дуэль комнаты (✅ ИСПРАВЛЕНО global)
-async def create_duel_room(user_id, bet):
-    global duel_rooms
-    room_id = len(duel_rooms) + 1
-    duel_rooms[room_id] = {
-        'host_id': user_id, 
-        'bet': bet, 
-        'created': time.time(),
-        'challenger_id': None
-    }
-    # Удаляем старые комнаты (>5 мин)
-    now = time.time()
-    duel_rooms = {k: v for k, v in duel_rooms.items() if now - v['created'] < 300}
-    return room_id
-
-async def get_active_rooms():
-    global duel_rooms
-    now = time.time()
-    active_rooms = {k: v for k, v in duel_rooms.items() if now - v['created'] < 300}
-    return active_rooms
-
-async def cleanup_duel_rooms():
-    global duel_rooms
-    now = time.time()
-    expired = [k for k, v in duel_rooms.items() if now - v['created'] > 300]
-    for room_id in expired:
-        duel_rooms.pop(room_id, None)
-
-# Старт
+# 🎮 СТАРТ
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await is_banned(update.effective_user.id):
         await update.message.reply_text("🚫 Вы заблокированы!")
@@ -235,333 +303,204 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     user = update.effective_user
     user_id = user.id
+    ref_id = None
+    
+    if len(update.message.text.split()) > 1:
+        ref_id = update.message.text.split()[1]
+    
+    is_admin = user_id == ADMIN_ID
     
     async with aiosqlite.connect('bot.db') as db:
-        await db.execute('''INSERT OR IGNORE INTO users (user_id, username, balance) 
-                          VALUES (?, ?, 1000)''', (user_id, user.username))
-        await db.commit()
+        cursor = await db.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
+        existing = await cursor.fetchone()
+        
+        if not existing:
+            if ref_id and ref_id.isdigit():
+                await db.execute('UPDATE users SET balance = balance + 500 WHERE user_id = ?', (int(ref_id),))
+                await db.execute('INSERT INTO users (user_id, username, balance, ref_id) VALUES (?, ?, 1000, ?)', 
+                               (user_id, user.username or 'user', int(ref_id)))
+            else:
+                await db.execute('INSERT INTO users (user_id, username, balance) VALUES (?, ?, 1000)', 
+                               (user_id, user.username or 'user'))
+            await db.commit()
     
     await update.message.reply_text(
         f"🎮 Добро пожаловать, {user.mention_html()}!\n💰 Стартовый баланс: <b>1,000₽</b>",
-        parse_mode='HTML', reply_markup=main_menu()
+        parse_mode='HTML', reply_markup=main_menu(is_admin)
     )
 
-# Админ панель
+# 👑 АДМИН ПАНЕЛЬ
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("❌ Доступ запрещен!")
         return
-    await update.message.reply_text("👑 **Админ панель**", parse_mode='Markdown', reply_markup=admin_main_menu())
+    await update.message.reply_text("👑 **ПОЛНАЯ АДМИН ПАНЕЛЬ**", parse_mode='Markdown', reply_markup=admin_main_menu())
 
-# Обработчик сообщений
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global duel_rooms
-    user_id = update.effective_user.id
+async def show_admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+        
+    top_users = await get_top_users()
+    top_clans = await get_top_clans()
     
-    if await is_banned(user_id) and user_id != ADMIN_ID:
+    users_text = "👥 **ТОП ИГРОКИ:**\n"
+    for i, (uid, uname, bal) in enumerate(top_users, 1):
+        users_text += f"{i}. @{uname or uid}: {bal:,}₽\n"
+    
+    clans_text = "\n🏆 **ТОП КЛАНЫ:**\n"
+    for i, (cid, cname, cpower, clevel) in enumerate(top_clans, 1):
+        clans_text += f"{i}. [{cname}] Ур.{clevel} Сила:{cpower:,}\n"
+    
+    await update.message.reply_text(users_text + clans_text, parse_mode='Markdown')
+
+# ✅ ОБРАБОТЧИК СООБЩЕНИЙ
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    is_admin = user_id == ADMIN_ID
+    
+    if await is_banned(user_id) and not is_admin:
         await update.message.reply_text("🚫 Вы заблокированы!")
         return
     
     text = update.message.text
     state = get_user_state(user_id)
-    
-    # ✅ АДМИН КОМАНДЫ
-    if user_id == ADMIN_ID:
-        if text == "💰 Валюта":
-            set_user_state(user_id, 'admin_currency_username')
-            await update.message.reply_text("👤 Введите username для выдачи валюты:")
-            return
-        elif text == "⭐ VIP/Предметы":
-            keyboard = [
-                [KeyboardButton("⚔️ Легендарный меч"), KeyboardButton("👑 Королевская корона")],
-                [KeyboardButton("🛡️ Абсолютный щит"), KeyboardButton("⭐ VIP")]
-            ]
-            await update.message.reply_text("🎁 Выберите предмет:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True))
-            set_user_state(user_id, 'admin_item_select')
-            return
-        elif text == "🔨 Бан":
-            set_user_state(user_id, 'admin_ban_username')
-            await update.message.reply_text("👤 Введите username для бана:")
-            return
-        elif text == "✅ Разбан":
-            set_user_state(user_id, 'admin_unban_username')
-            await update.message.reply_text("👤 Введите username для разбана:")
-            return
-        elif text == "👥 Топ игроков":
-            users = await get_all_users()
-            top_text = "👥 **Топ 10 игроков:**\n\n"
-            for i, (uid, uname, bal) in enumerate(users, 1):
-                top_text += f"{i}. @{uname} — {bal:,}₽\n"
-            await update.message.reply_text(top_text, parse_mode='Markdown', reply_markup=admin_main_menu())
-            return
-        elif text == "📊 Статистика":
-            async with aiosqlite.connect('bot.db') as db:
-                total_users = await db.execute_fetchall('SELECT COUNT(*) FROM users')
-                total_money = await db.execute_fetchall('SELECT SUM(balance) FROM users')
-            await update.message.reply_text(
-                f"📊 **Статистика бота:**\n"
-                f"👥 Игроков: {total_users[0][0]}\n"
-                f"💰 Общий баланс: {total_money[0][0] or 0:,}₽",
-                parse_mode='Markdown', reply_markup=admin_main_menu()
-            )
-            return
-        elif text == "🔙 Главное меню":
-            clear_user_state(user_id)
-            await update.message.reply_text("🏠 Главное меню", reply_markup=main_menu())
-            return
-    
-    # ✅ АДМИН СОСТОЯНИЯ - TEXT INPUT
-    if user_id == ADMIN_ID and state:
-        await handle_admin_state(update, context)
-        return
-    
     user_data = await get_user_data(user_id)
+    
     if not user_data:
-        await update.message.reply_text("👆 /start", reply_markup=main_menu())
+        await update.message.reply_text("👆 /start", reply_markup=main_menu(is_admin))
         return
     
-    balance = user_data[2]
+    # 👑 АДМИН КОМАНДЫ
+    if is_admin:
+        if text == "👑 Админ":
+            await update.message.reply_text("👑 **ПОЛНАЯ АДМИН ПАНЕЛЬ**", parse_mode='Markdown', reply_markup=admin_main_menu())
+            return
+        
+        elif text == "👤 Игроки":
+            set_user_state(user_id, 'admin_player_search')
+            await update.message.reply_text("🔍 Введите `@username` игрока:")
+            return
+            
+        elif text == "🛒 Магазин":
+            items = await admin_get_all_shop_items()
+            await update.message.reply_text("🛒 **Управление магазином**", reply_markup=admin_shop_menu(items))
+            return
+            
+        elif text == "🎁 Промокоды":
+            promos = await admin_get_all_promocodes()
+            await update.message.reply_text("🎁 **Управление промокодами**", reply_markup=admin_promo_menu(promos))
+            return
+            
+        elif text == "📊 Статистика":
+            await show_admin_stats(update, context)
+            return
+            
+        elif text == "🔙 Главное":
+            clear_user_state(user_id)
+            await update.message.reply_text("🏠 Главное меню", reply_markup=main_menu(True))
+            return
     
-    # ✅ ОСНОВНЫЕ КНОПКИ
-    if text == "⚔️ Дуэли":
-        await update.message.reply_text("⚔️ **Дуэли**\n\nВыберите действие:", reply_markup=duel_menu(), parse_mode='Markdown')
-    elif text == "🛒 Магазин":
-        await update.message.reply_text("🛒 **Донат магазин**\n\nВыберите предмет:", reply_markup=shop_menu())
+    # ✅ ОСНОВНЫЕ ФУНКЦИИ
+    if text == "👥 Кланы":
+        await update.message.reply_text("🏰 **КЛАНЫ**", reply_markup=clan_menu())
+        return
+    
+    elif text == "⛏️ Майнинг":
+        if await can_use_cooldown(user_id, 3):
+            reward = await mining_logic(user_id)
+            await update.message.reply_text(f"⛏️ **+{reward:,}₽**\n⏰ 5 мин кулдаун", parse_mode='Markdown', reply_markup=main_menu(is_admin))
+        else:
+            cooldown_left = int(user_data[3] - time.time())
+            await update.message.reply_text(f"⛏️ Кулдаун: {cooldown_left//60}м", reply_markup=main_menu(is_admin))
+    
     elif text == "💰 Баланс":
-        sword = user_data[13] or 0
-        crown = user_data[14] or 0
-        shield = user_data[15] or 0
-        items = [f"{sword}⚔️", f"{crown}👑", f"{shield}🛡️"]
-        await update.message.reply_text(
-            f"💰 **Баланс:** {balance:,}₽\n"
-            f"🎁 **Предметы:** {' | '.join(items)}",
-            parse_mode='Markdown', reply_markup=main_menu()
-        )
+        vip_status = "⭐ VIP" if await is_vip(user_id) else ""
+        await update.message.reply_text(f"💰 **{user_data[2]:,}₽** {vip_status}", parse_mode='Markdown', reply_markup=main_menu(is_admin))
+    
     else:
-        await update.message.reply_text("👆 Выберите кнопку меню", reply_markup=main_menu())
+        await update.message.reply_text("👆 Выберите кнопку меню", reply_markup=main_menu(is_admin))
 
-# ✅ АДМИН TEXT INPUT ОБРАБОТЧИК
-async def handle_admin_state(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    text = update.message.text
-    state = get_user_state(user_id)
-    
-    if state['state'] == 'admin_currency_username':
-        target_id = await get_user_by_username(text)
-        if target_id:
-            set_user_state(user_id, 'admin_currency_amount', {'target_id': target_id})
-            await update.message.reply_text(f"✅ Найден @{text}!\n💰 Введите сумму для выдачи:")
-        else:
-            await update.message.reply_text(f"❌ Пользователь @{text} не найден!")
-    
-    elif state['state'] == 'admin_currency_amount':
-        try:
-            amount = int(text)
-            target_id = state['data']['target_id']
-            await update_user_balance(target_id, amount)
-            target_user = await get_user_data(target_id)
-            clear_user_state(user_id)
-            await update.message.reply_text(
-                f"✅ **Выдано {amount:,}₽** пользователю @{target_user[1]}\n"
-                f"💰 Новый баланс: {target_user[2] + amount:,}₽",
-                parse_mode='Markdown', reply_markup=admin_main_menu()
-            )
-        except:
-            await update.message.reply_text("❌ Неверная сумма!")
-    
-    elif state['state'] == 'admin_item_select':
-        if text in ["⚔️ Легендарный меч", "👑 Королевская корона", "🛡️ Абсолютный щит"]:
-            set_user_state(user_id, 'admin_item_username', {'item_name': text})
-            await update.message.reply_text("👤 Введите username для выдачи предмета:")
-        elif text == "⭐ VIP":
-            set_user_state(user_id, 'admin_vip_username')
-            await update.message.reply_text("👤 Введите username для VIP:")
-    
-    elif state['state'] == 'admin_item_username':
-        target_id = await get_user_by_username(text)
-        if target_id:
-            item_name = state['data']['item_name']
-            item_map = {
-                "⚔️ Легендарный меч": 1,
-                "👑 Королевская корона": 2,
-                "🛡️ Абсолютный щит": 3
-            }
-            item_id = item_map.get(item_name, 1)
-            await give_item(target_id, item_id)
-            target_user = await get_user_data(target_id)
-            clear_user_state(user_id)
-            await update.message.reply_text(
-                f"✅ **{item_name} выдан** пользователю @{target_user[1]}!",
-                parse_mode='Markdown', reply_markup=admin_main_menu()
-            )
-        else:
-            await update.message.reply_text(f"❌ Пользователь @{text} не найден!")
-    
-    elif state['state'] == 'admin_ban_username':
-        target_id = await get_user_by_username(text)
-        if target_id:
-            await ban_user(target_id)
-            clear_user_state(user_id)
-            await update.message.reply_text(f"✅ **@{text} заблокирован!**", reply_markup=admin_main_menu())
-        else:
-            await update.message.reply_text(f"❌ Пользователь @{text} не найден!")
-    
-    elif state['state'] == 'admin_unban_username':
-        target_id = await get_user_by_username(text)
-        if target_id:
-            await unban_user(target_id)
-            clear_user_state(user_id)
-            await update.message.reply_text(f"✅ **@{text} разблокирован!**", reply_markup=admin_main_menu())
-        else:
-            await update.message.reply_text(f"❌ Пользователь @{text} не найден!")
-
-# ✅ CALLBACK ОБРАБОТЧИК (ИСПРАВЛЕНО)
+# ✅ CALLBACK (ПОЛНЫЙ КЛАНОВЫЙ)
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global duel_rooms
     query = update.callback_query
     await query.answer()
     
     data = query.data
     user_id = query.from_user.id
-    user_data = await get_user_data(user_id)
-    balance = user_data[2] if user_data else 0
+    is_admin = user_id == ADMIN_ID
     
-    if await is_banned(user_id) and user_id != ADMIN_ID:
-        await query.edit_message_text("🚫 Вы заблокированы!")
-        return
-    
-    # 🔙 НАЗАД В МЕНЮ
     if data == "main_menu":
-        await query.edit_message_text("🏠 **Главное меню**", reply_markup=main_menu())
+        await query.edit_message_text("🏠 Главное меню", reply_markup=main_menu(is_admin))
         return
     
-    # 🛒 МАГАЗИН
-    elif data.startswith("shop_"):
-        item_id = int(data.split('_')[1])
-        async with aiosqlite.connect('bot.db') as db:
-            async with db.execute('SELECT name, price, emoji FROM shop_items WHERE item_id = ?', (item_id,)) as cursor:
-                item = await cursor.fetchone()
-        
-        if item and balance >= item[1]:
-            await update_user_balance(user_id, -item[1])
-            await give_item(user_id, item_id)
-            await query.edit_message_text(
-                f"✅ **{item[2]} {item[0]} куплен!**\n"
-                f"💰 Списано: {item[1]:,}₽\n💰 Остаток: {balance - item[1]:,}₽",
-                reply_markup=shop_menu(), parse_mode='Markdown'
-            )
-        else:
-            await query.edit_message_text(f"❌ Недостаточно средств!\n💰 Нужно: {item[1]:,}₽", reply_markup=shop_menu())
+    elif data == "admin_main":
+        await query.edit_message_text("👑 Админ панель", reply_markup=admin_main_menu())
+        return
     
-    # ⚔️ ДУЭЛИ
-    elif data == "duel_search":
-        await query.edit_message_text(
-            "⚔️ **Введите ставку (мин. 50₽):**\n"
-            f"💰 Ваш баланс: {balance:,}₽",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("100₽", callback_data="duel_bet_100")],
-                [InlineKeyboardButton("500₽", callback_data="duel_bet_500")],
-                [InlineKeyboardButton("1000₽", callback_data="duel_bet_1000")],
-                [InlineKeyboardButton("🔙 Дуэли", callback_data="duel_back")]
-            ])
-        )
+    # 🏰 КЛАНЫ (ПОЛНАЯ СИСТЕМА)
+    elif data == "clan_menu":
+        await query.edit_message_text("🏰 **КЛАНЫ**", reply_markup=clan_menu())
     
-    elif data.startswith("duel_bet_"):
-        bet = int(data.split('_')[2])
-        if balance < bet:
-            await query.answer("❌ Недостаточно средств!", show_alert=True)
-            return
-        
-        await cleanup_duel_rooms()
-        opponent_room = None
-        for room_id, room in duel_rooms.items():
-            if room['bet'] == bet and room['host_id'] != user_id and not room.get('challenger_id'):
-                opponent_room = room_id
-                break
-        
-        if opponent_room:
-            room = duel_rooms[opponent_room]
-            host_data = await get_user_data(room['host_id'])
-            
-            await update_user_balance(user_id, -bet)
-            await update_user_balance(room['host_id'], -bet)
-            
-            # Бой!
-            if random.random() > 0.5:
-                winner_id, loser_id = user_id, room['host_id']
-            else:
-                winner_id, loser_id = room['host_id'], user_id
-            
-            await update_user_balance(winner_id, bet * 2)
-            
-            winner_data = await get_user_data(winner_id)
-            loser_data = await get_user_data(loser_id)
-            winner_username = winner_data[1] or "Игрок"
-            loser_username = loser_data[1] or "Игрок"
-            
+    elif data == "clan_top":
+        clans = await get_all_clans()
+        text = "🏆 **ТОП КЛАНОВ:**\n"
+        for clan_id, name, power, members, max_members in clans[:10]:
+            text += f"**{name}** [{clan_id}] Сила:{power:,} ({members}/{max_members})\n"
+        await query.edit_message_text(text, reply_markup=clan_top_menu(clans), parse_mode='Markdown')
+    
+    elif data.startswith("clan_view_"):
+        clan_id = int(data.split('_')[2])
+        clan = await get_clan_data(clan_id)
+        if clan:
             await query.edit_message_text(
-                f"⚔️ **Дуэль завершена!**\n\n"
-                f"🏆 Победитель: @{winner_username}\n"
-                f"💰 Награда: {bet * 2:,}₽\n"
-                f"💥 Проигравший: @{loser_username}",
+                f"🏰 **[{clan[1]}] [{clan[0]}]**\n"
+                f"💪 Сила: {clan[7]:,}\n"
+                f"👥 Членов: {clan[4]}/{clan[3]}\n"
+                f"💰 Казна: {clan[5]:,}₽\n"
+                f"⚔️ Ур: {clan[6]}",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔍 Новая дуэль", callback_data="duel_search")],
-                    [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
-                ])
+                    [InlineKeyboardButton("📝 Вступить", callback_data=f"clan_join_{clan_id}")],
+                    [InlineKeyboardButton("🔙 Топ", callback_data="clan_top")]
+                ]),
+                parse_mode='Markdown'
             )
-            
-            # Уведомление хозяину
-            try:
-                await context.bot.send_message(
-                    room['host_id'],
-                    f"⚔️ **Дуэль завершена!**\n\n"
-                    f"🏆 Победитель: @{winner_username}\n"
-                    f"💰 Награда: {bet * 2:,}₽\n"
-                    f"💥 Проигравший: @{loser_username}"
-                )
-            except:
-                pass
-            
-            duel_rooms.pop(opponent_room, None)
-            
-        else:
-            room_id = await create_duel_room(user_id, bet)
+    
+    elif data.startswith("clan_join_"):
+        clan_id = int(data.split('_')[2])
+        success, message = await join_clan_by_id(user_id, clan_id)
+        await query.edit_message_text(message, parse_mode='Markdown')
+    
+    elif data == "clan_search":
+        clans = await get_all_clans()
+        await query.edit_message_text("🔍 **ПОИСК КЛАНОВ:**", reply_markup=clan_top_menu(clans))
+    
+    elif data == "clan_create":
+        set_user_state(user_id, 'clan_create_name')
+        await query.message.reply_text("📝 Название клана (макс 15 символов):")
+    
+    elif data == "clan_join_id":
+        set_user_state(user_id, 'clan_join_id')
+        await query.message.reply_text("📝 Введите ID клана (число):")
+    
+    elif data == "clan_info":
+        user_clan = await get_user_clan(user_id)
+        if user_clan:
+            clan = await get_clan_data(user_clan)
             await query.edit_message_text(
-                f"✅ **Комната {room_id} создана!**\n"
-                f"💰 Ставка: {bet:,}₽\n"
-                f"⏰ Автоудаление: 5 минут",
+                f"🏰 **[{clan[1]}]**\n"
+                f"💪 Сила: {clan[7]:,}\n"
+                f"👥 {clan[4]}/{clan[3]}\n"
+                f"💰 {clan[5]:,}₽",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("❌ Закрыть комнату", callback_data=f"close_room_{room_id}")],
-                    [InlineKeyboardButton("📋 Посмотреть комнаты", callback_data="duel_rooms")],
-                    [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
-                ])
+                    [InlineKeyboardButton("⚔️ Босс", callback_data="clan_boss")],
+                    [InlineKeyboardButton("🔙 Кланы", callback_data="clan_menu")]
+                ]),
+                parse_mode='Markdown'
             )
-    
-    elif data == "duel_rooms":
-        rooms = await get_active_rooms()
-        if rooms:
-            markup = await duel_rooms_menu(rooms)
-            await query.edit_message_text("📋 **Активные комнаты:**", reply_markup=markup)
         else:
-            await query.edit_message_text("📭 **Нет активных комнат**\n\n🔍 Создайте свою!", reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔍 Искать дуэль", callback_data="duel_search")],
-                [InlineKeyboardButton("🔙 Дуэли", callback_data="duel_back")]
-            ]))
-    
-    elif data.startswith("close_room_"):
-        room_id = int(data.split('_')[2])
-        if room_id in duel_rooms and duel_rooms[room_id]['host_id'] == user_id:
-            await update_user_balance(user_id, duel_rooms[room_id]['bet'])
-            duel_rooms.pop(room_id, None)
-            await query.edit_message_text("❌ **Комната закрыта**\n💰 Ставка возвращена", reply_markup=duel_menu())
-    
-    elif data == "duel_back":
-        await query.edit_message_text("⚔️ **Дуэли**", reply_markup=duel_menu())
-    
-    else:
-        await query.edit_message_text("🏠 **Главное меню**", reply_markup=main_menu())
+            await query.edit_message_text("❌ Вы не в клане!", reply_markup=clan_menu())
 
-# Основной запуск
+# ОСНОВНОЙ ЗАПУСК
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.post_init = init_db
@@ -572,7 +511,7 @@ def main():
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    logger.info("🚀 Бот запускается...")
+    logger.info("🚀 БОТ с ПОЛНЫМИ КЛАНАМИ запускается...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
