@@ -45,7 +45,8 @@ async def init_db():
                             )""")
         await db.execute("""CREATE TABLE IF NOT EXISTS promo_codes(
                             code TEXT PRIMARY KEY,
-                            currency INTEGER,
+                            currency INTEGER DEFAULT 0,
+                            vip_days INTEGER DEFAULT 0,
                             uses_left INTEGER,
                             expires_at TEXT
                             )""")
@@ -64,6 +65,13 @@ async def init_db():
 # =========================
 # Вспомогательные функции
 # =========================
+async def get_user_by_username(username):
+    """Получить user_id по username"""
+    async with aiosqlite.connect(DB_FILE) as db:
+        async with db.execute("SELECT user_id FROM users WHERE username=?", (username,)) as cursor:
+            result = await cursor.fetchone()
+        return result[0] if result else None
+
 async def get_user(user_id, username=None):
     async with aiosqlite.connect(DB_FILE) as db:
         async with db.execute("SELECT * FROM users WHERE user_id=?", (user_id,)) as cursor:
@@ -78,6 +86,22 @@ async def get_user(user_id, username=None):
 async def update_balance(user_id, amount):
     async with aiosqlite.connect(DB_FILE) as db:
         await db.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (amount, user_id))
+        await db.commit()
+
+async def set_vip(user_id, days):
+    expires = (datetime.utcnow() + timedelta(days=days)).isoformat()
+    async with aiosqlite.connect(DB_FILE) as db:
+        await db.execute("UPDATE users SET vip_until=? WHERE user_id=?", (expires, user_id))
+        await db.commit()
+
+async def ban_user(user_id):
+    async with aiosqlite.connect(DB_FILE) as db:
+        await db.execute("INSERT OR IGNORE INTO banned_users(user_id) VALUES(?)", (user_id,))
+        await db.commit()
+
+async def unban_user(user_id):
+    async with aiosqlite.connect(DB_FILE) as db:
+        await db.execute("DELETE FROM banned_users WHERE user_id=?", (user_id,))
         await db.commit()
 
 async def add_item(user_id, item):
@@ -100,19 +124,27 @@ async def get_inventory(user_id):
 # =========================
 async def use_promocode(user_id, code):
     async with aiosqlite.connect(DB_FILE) as db:
-        async with db.execute("SELECT currency, uses_left, expires_at FROM promo_codes WHERE code=?", (code,)) as cursor:
+        async with db.execute("SELECT currency, vip_days, uses_left, expires_at FROM promo_codes WHERE code=?", (code.upper(),)) as cursor:
             promo = await cursor.fetchone()
         if not promo:
             return "❌ Промокод не найден."
-        currency, uses_left, expires_at = promo
+        currency, vip_days, uses_left, expires_at = promo
         if uses_left <= 0:
             return "❌ Промокод исчерпан."
         if expires_at and datetime.utcnow() > datetime.fromisoformat(expires_at):
             return "❌ Промокод истёк."
-        await update_balance(user_id, currency)
-        await db.execute("UPDATE promo_codes SET uses_left = uses_left - 1 WHERE code=?", (code,))
+        
+        result = ""
+        if currency > 0:
+            await update_balance(user_id, currency)
+            result += f"✅ Получено {currency} валюты!\n"
+        if vip_days > 0:
+            await set_vip(user_id, vip_days)
+            result += f"✅ Получен VIP на {vip_days} дней!\n"
+        
+        await db.execute("UPDATE promo_codes SET uses_left = uses_left - 1 WHERE code=?", (code.upper(),))
         await db.commit()
-        return f"✅ Вы получили {currency} валюты!"
+        return result or "❌ Промокод не содержит наград."
 
 # =========================
 # Магазин
@@ -170,7 +202,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if random.random() < 0.1:
             item = "Редкий сундук"
             await add_item(user_id, item)
-            msg += f" Вы нашли {item}!"
+            msg += f"\nВы нашли {item}!"
         await query.edit_message_text(msg)
 
     # ---------- ПРОФИЛЬ ----------
@@ -178,7 +210,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = await get_user(user_id)
         inv = await get_inventory(user_id)
         vip_status = f"VIP до {user[3]}" if user[3] else "Нет VIP"
-        text = f"Профиль @{user[1]}:\nБаланс: {user[2]}\nVIP: {vip_status}\nИнвентарь: {', '.join(inv) if inv else 'Пусто'}"
+        text = f"Профиль @{user[1] or 'неизвестно'}:\nБаланс: {user[2]}\nVIP: {vip_status}\nИнвентарь: {', '.join(inv) if inv else 'Пусто'}"
         await query.edit_message_text(text)
 
     # ---------- ТОП 10 ----------
@@ -186,173 +218,216 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         async with aiosqlite.connect(DB_FILE) as db:
             async with db.execute("SELECT username, balance FROM users ORDER BY balance DESC LIMIT 10") as cursor:
                 rows = await cursor.fetchall()
-        text = "🏆 Топ 10 по валюте:\n" + "\n".join([f"{i+1}. @{r[0]} — {r[1]}" for i,r in enumerate(rows)])
+        text = "🏆 Топ 10 по валюте:\n" + "\n".join([f"{i+1}. @{r[0] or 'неизвестно'} — {r[1]}" for i,r in enumerate(rows)])
         await query.edit_message_text(text)
 
     # ---------- МАГАЗИН ----------
     elif data == "shop":
         kb = [[InlineKeyboardButton(f"{item} ({info['price']})", callback_data=f"shop_{item}")] for item, info in SHOP_ITEMS.items()]
         kb.append([InlineKeyboardButton("Вернуться в меню", callback_data="start")])
-        await query.edit_message_text("Магазин:", reply_markup=InlineKeyboardMarkup(kb))
+        await query.edit_message_text("🛒 Магазин:", reply_markup=InlineKeyboardMarkup(kb))
 
     elif data.startswith("shop_"):
         item_name = data[5:]
         info = SHOP_ITEMS[item_name]
         kb = [
-            [InlineKeyboardButton("Купить", callback_data=f"buy_{item_name}")],
-            [InlineKeyboardButton("Вернуться в магазин", callback_data="shop")]
+            [InlineKeyboardButton("💰 Купить", callback_data=f"buy_{item_name}")],
+            [InlineKeyboardButton("⬅️ Назад в магазин", callback_data="shop")]
         ]
-        await query.edit_message_text(f"{item_name}\nЦена: {info['price']}\nОписание: {info['description']}", reply_markup=InlineKeyboardMarkup(kb))
+        await query.edit_message_text(f"{item_name}\n💰 Цена: {info['price']}\n📝 {info['description']}", reply_markup=InlineKeyboardMarkup(kb))
 
     elif data.startswith("buy_"):
         item_name = data[4:]
         user = await get_user(user_id)
-        if user[2] >= SHOP_ITEMS[item_name]["price"]:
-            await update_balance(user_id, -SHOP_ITEMS[item_name]["price"])
+        price = SHOP_ITEMS[item_name]["price"]
+        if user[2] >= price:
+            await update_balance(user_id, -price)
             await add_item(user_id, item_name)
-            await query.edit_message_text(f"Вы купили {item_name}!")
+            await query.edit_message_text(f"✅ Вы купили {item_name}!")
         else:
-            await query.edit_message_text("Недостаточно валюты!")
+            await query.edit_message_text(f"❌ Недостаточно валюты! Нужно: {price}")
 
     # ---------- ИНВЕНТАРЬ ----------
     elif data == "inventory":
         inv = await get_inventory(user_id)
-        if not inv:
-            await query.edit_message_text("Инвентарь пуст.")
+        if not inv or inv == ['']:
+            await query.edit_message_text("🎒 Инвентарь пуст.")
             return
-        kb = [[InlineKeyboardButton(item, callback_data=f"use_{item}")] for item in inv]
-        kb.append([InlineKeyboardButton("Вернуться в меню", callback_data="start")])
-        await query.edit_message_text("Инвентарь:", reply_markup=InlineKeyboardMarkup(kb))
+        kb = [[InlineKeyboardButton(item, callback_data=f"use_{item}")] for item in inv if item]
+        kb.append([InlineKeyboardButton("⬅️ В меню", callback_data="start")])
+        await query.edit_message_text("🎒 Инвентарь:", reply_markup=InlineKeyboardMarkup(kb))
 
     elif data.startswith("use_"):
         item_name = data[4:]
-        await query.edit_message_text(f"Вы использовали {item_name}!")
+        await query.edit_message_text(f"✅ Вы использовали {item_name}!")
 
     # ---------- ЭКСПЕДИЦИИ ----------
     elif data == "expedition":
         reward = random.randint(20, 100)
         await update_balance(user_id, reward)
-        await query.edit_message_text(f"Вы отправились в экспедицию и получили {reward} валюты!")
+        await query.edit_message_text(f"🌍 Экспедиция завершена!\n💰 Получено: {reward} валюты!")
 
     # ---------- МИССИИ ----------
     elif data == "mission":
         reward = random.randint(30, 120)
         await update_balance(user_id, reward)
-        await query.edit_message_text(f"Вы выполнили миссию и получили {reward} валюты!")
+        await query.edit_message_text(f"🎯 Миссия выполнена!\n💰 Получено: {reward} валюты!")
 
     # ---------- ПРОМОКОД ----------
     elif data == "promo":
-        await query.edit_message_text("Введите промокод:")
+        context.user_data['waiting_promo'] = True
+        await query.edit_message_text("🎁 Введите промокод:")
 
     # ---------- АДМИН-ПАНЕЛЬ ----------
     elif data == "admin" and user_id in ADMIN_IDS:
         kb = [
-            [InlineKeyboardButton("Выдать валюту", callback_data="admin_currency")],
-            [InlineKeyboardButton("Выдать VIP", callback_data="admin_vip")],
-            [InlineKeyboardButton("Бан", callback_data="admin_ban")],
-            [InlineKeyboardButton("Разбан", callback_data="admin_unban")],
-            [InlineKeyboardButton("Создать промокод", callback_data="admin_promo_create")],
-            [InlineKeyboardButton("Удалить промокод", callback_data="admin_promo_delete")],
-            [InlineKeyboardButton("Купить VIP", url=f"https://t.me/{ADMIN_USERNAME}")]
+            [InlineKeyboardButton("💰 Выдать валюту", callback_data="admin_currency")],
+            [InlineKeyboardButton("👑 Выдать VIP", callback_data="admin_vip")],
+            [InlineKeyboardButton("🔨 Бан", callback_data="admin_ban")],
+            [InlineKeyboardButton("✅ Разбан", callback_data="admin_unban")],
+            [InlineKeyboardButton("➕ Создать промокод", callback_data="admin_promo_create")],
+            [InlineKeyboardButton("🗑️ Удалить промокод", callback_data="admin_promo_delete")],
+            [InlineKeyboardButton("⬅️ В меню", callback_data="start")]
         ]
-        await query.edit_message_text("Админ-панель:", reply_markup=InlineKeyboardMarkup(kb))
+        await query.edit_message_text("🔧 Админ-панель:", reply_markup=InlineKeyboardMarkup(kb))
 
+    # ---------- АДМИН ДЕЙСТВИЯ - Запрос username ----------
     elif data.startswith("admin_") and user_id in ADMIN_IDS:
-        context.user_data['admin_action'] = data
+        actions_need_username = ["admin_currency", "admin_vip", "admin_ban", "admin_unban"]
+        if data in actions_need_username:
+            context.user_data['admin_action'] = data
+            await query.edit_message_text("👤 Введите @username пользователя (без @):")
+        elif data == "admin_promo_create":
+            context.user_data['admin_action'] = data
+            await query.edit_message_text("🎁 Создать промокод\nФормат: CODE сумма_валюты_или_vip_дней количество_использований [дата_истечения YYYY-MM-DD]\nПример: WELCOME100 100 1000\nПример: VIP7 vip 7 500 2025-12-31")
+        elif data == "admin_promo_delete":
+            context.user_data['admin_action'] = data
+            await query.edit_message_text("🗑️ Введите название промокода для удаления:")
 
     # ---------- ВОЗВРАТ В МЕНЮ ----------
     elif data == "start":
         await start(update, context)
 
 # =========================
-# Обработка ввода промокода и админских команд (НОВАЯ ЛОГИКА)
+# Обработка текстового ввода
 # =========================
 async def message_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text.strip()
 
+    # Проверка на промокод
+    if context.user_data.get('waiting_promo'):
+        context.user_data['waiting_promo'] = False
+        result = await use_promocode(user_id, text)
+        await update.message.reply_text(result)
+        return
+
+    # Проверка на админа
     if user_id in ADMIN_IDS:
         action = context.user_data.get('admin_action')
         if action:
-            try:
+            if action in ["admin_currency", "admin_vip", "admin_ban", "admin_unban"]:
+                # Поиск пользователя по username
+                username = text.lstrip('@')
+                target_id = await get_user_by_username(username)
+                
+                if not target_id:
+                    await update.message.reply_text(f"❌ Пользователь @{username} не найден!")
+                    return
+                
+                context.user_data['target_user_id'] = target_id
+                context.user_data['target_username'] = username
+                
                 if action == "admin_currency":
-                    username, amount = text.split()
-                    amount = int(amount)
-                    async with aiosqlite.connect(DB_FILE) as db:
-                        async with db.execute("SELECT user_id FROM users WHERE username=?", (username.lstrip("@"),)) as cursor:
-                            target = await cursor.fetchone()
-                        if not target:
-                            await update.message.reply_text(f"❌ Пользователь {username} не найден")
-                            return
-                        target_id = target[0]
-                        await update_balance(target_id, amount)
-                        await update.message.reply_text(f"✅ Выдали {amount} валюты пользователю {username}")
-
+                    await update.message.reply_text(f"✅ Найден @{username} (ID: {target_id})\n💰 Введите сумму для выдачи:")
                 elif action == "admin_vip":
-                    username, days = text.split()
-                    days = int(days)
-                    expires = (datetime.utcnow() + timedelta(days=days)).isoformat()
-                    async with aiosqlite.connect(DB_FILE) as db:
-                        await db.execute("UPDATE users SET vip_until=? WHERE username=?", (expires, username.lstrip("@")))
-                        await db.commit()
-                    await update.message.reply_text(f"✅ Выдали VIP на {days} дней пользователю {username}")
-
+                    await update.message.reply_text(f"✅ Найден @{username} (ID: {target_id})\n👑 Введите количество дней VIP:")
                 elif action == "admin_ban":
-                    username = text
-                    async with aiosqlite.connect(DB_FILE) as db:
-                        async with db.execute("SELECT user_id FROM users WHERE username=?", (username.lstrip("@"),)) as cursor:
-                            target = await cursor.fetchone()
-                        if not target:
-                            await update.message.reply_text(f"❌ Пользователь {username} не найден")
-                            return
-                        await db.execute("INSERT OR IGNORE INTO banned_users(user_id) VALUES(?)", (target[0],))
-                        await db.commit()
-                    await update.message.reply_text(f"✅ Пользователь {username} забанен")
-
+                    await ban_user(target_id)
+                    await update.message.reply_text(f"✅ Пользователь @{username} (ID: {target_id}) забанен!")
+                    context.user_data['admin_action'] = None
+                    return
                 elif action == "admin_unban":
-                    username = text
-                    async with aiosqlite.connect(DB_FILE) as db:
-                        async with db.execute("SELECT user_id FROM users WHERE username=?", (username.lstrip("@"),)) as cursor:
-                            target = await cursor.fetchone()
-                        if not target:
-                            await update.message.reply_text(f"❌ Пользователь {username} не найден")
-                            return
-                        await db.execute("DELETE FROM banned_users WHERE user_id=?", (target[0],))
-                        await db.commit()
-                    await update.message.reply_text(f"✅ Пользователь {username} разбанен")
-
-                elif action == "admin_promo_create":
+                    unban_user(target_id)
+                    await update.message.reply_text(f"✅ Пользователь @{username} (ID: {target_id}) разбанен!")
+                    context.user_data['admin_action'] = None
+                    return
+                    
+            elif action == "admin_promo_create":
+                try:
                     parts = text.split()
-                    code = parts[0]
-                    if parts[1].lower() == "баланс":
-                        currency = int(parts[2])
-                    elif parts[1].lower() == "vip":
-                        currency = int(parts[2])
+                    code = parts[0].upper()
+                    param1 = parts[1].lower()
+                    
+                    if param1 == "vip":
+                        vip_days = int(parts[2])
+                        currency = 0
+                        uses_left = int(parts[3])
+                        expires_at = parts[4] if len(parts) > 4 else None
                     else:
-                        await update.message.reply_text("❌ Ошибка формата. Используйте: CODE баланс 100 или CODE vip 7")
-                        return
-                    uses = 1
-                    expires = (datetime.utcnow() + timedelta(days=30)).isoformat()
+                        currency = int(param1)
+                        vip_days = 0
+                        uses_left = int(parts[2])
+                        expires_at = parts[3] if len(parts) > 3 else None
+                    
+                    expires_iso = None
+                    if expires_at:
+                        expires_iso = datetime.strptime(expires_at, "%Y-%m-%d").isoformat()
+                    
                     async with aiosqlite.connect(DB_FILE) as db:
-                        await db.execute("INSERT INTO promo_codes(code, currency, uses_left, expires_at) VALUES(?,?,?,?)",
-                                         (code, currency, uses, expires))
+                        await db.execute("""INSERT OR REPLACE INTO promo_codes 
+                                         (code, currency, vip_days, uses_left, expires_at) 
+                                         VALUES(?,?,?,?,?)""",
+                                       (code, currency, vip_days, uses_left, expires_iso))
                         await db.commit()
-                    await update.message.reply_text(f"✅ Промокод {code} создан")
-
-                elif action == "admin_promo_delete":
-                    code = text
+                    
+                    msg = f"✅ Промокод **{code}** создан!\n"
+                    if currency > 0:
+                        msg += f"💰 Валюта: {currency}\n"
+                    if vip_days > 0:
+                        msg += f"👑 VIP: {vip_days} дней\n"
+                    msg += f"🔢 Использований: {uses_left}"
+                    await update.message.reply_text(msg)
+                    
+                except Exception as e:
+                    await update.message.reply_text(f"❌ Ошибка создания промокода: {str(e)}")
+                context.user_data['admin_action'] = None
+                return
+                
+            elif action == "admin_promo_delete":
+                try:
+                    code = text.upper()
                     async with aiosqlite.connect(DB_FILE) as db:
                         await db.execute("DELETE FROM promo_codes WHERE code=?", (code,))
                         await db.commit()
-                    await update.message.reply_text(f"✅ Промокод {code} удалён")
+                    await update.message.reply_text(f"✅ Промокод **{code}** удалён!")
+                except Exception as e:
+                    await update.message.reply_text(f"❌ Ошибка удаления: {str(e)}")
+                context.user_data['admin_action'] = None
+                return
+            
+            # Финальные действия после ввода суммы/дней
+            if 'target_user_id' in context.user_data:
+                target_id = context.user_data['target_user_id']
+                target_username = context.user_data['target_username']
+                
+                try:
+                    amount = int(text)
+                    if action == "admin_currency":
+                        await update_balance(target_id, amount)
+                        await update.message.reply_text(f"✅ @{target_username}: +{amount} валюты!")
+                    elif action == "admin_vip":
+                        await set_vip(target_id, amount)
+                        await update.message.reply_text(f"✅ @{target_username}: VIP на {amount} дней!")
+                except:
+                    await update.message.reply_text("❌ Ошибка! Введите число.")
+                
+                context.user_data.pop('target_user_id', None)
+                context.user_data.pop('target_username', None)
+                context.user_data['admin_action'] = None
+                return
 
-            except Exception as e:
-                await update.message.reply_text(f"❌ Ошибка: {e}")
-
-            context.user_data['admin_action'] = None
-            return
-
-    # Обычные пользователи — вводят промокод
+    # Обычный промокод для не-админов
     result = await use_promocode(user_id, text)
     await update.message.reply_text(result)
 
