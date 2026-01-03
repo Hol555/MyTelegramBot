@@ -175,13 +175,6 @@ async def get_user_sync(user_id: int):
     if row:
         return dict(zip([desc[0] for desc in cursor.description], row))
     return None
-        
-        # Новый игрок
-        username = f"user_{user_id}"
-        await db.execute('INSERT INTO users (user_id,username,balance,created_at) VALUES (?,?,1500,?)',
-                        (user_id, username, time.time()))
-        await db.commit()
-        return {'user_id': user_id, 'username': username, 'balance': 1500, 'level': 1}
 
 async def get_inventory(user_id: int) -> List[Dict]:
     """🎒 Инвентарь"""
