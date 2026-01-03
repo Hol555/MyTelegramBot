@@ -67,7 +67,7 @@ def get_user_power(user: Dict, inventory: List) -> float:
 
 # 🗄️ Database
 async def init_db():
-    """🔧 Инициализация БД (Railway safe)"""
+    """🔧 Инициализация БД (Railway safe - FIXED)"""
     async with aiosqlite.connect('mmobot.db') as db:
         await db.execute('''CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY, username TEXT, balance INTEGER DEFAULT 1000,
@@ -143,11 +143,13 @@ async def init_db():
         
         await db.executemany('INSERT OR IGNORE INTO items VALUES (?,?,?,?,?,?,?,?,?,?)', items_data)
         
-        # Промокоды
+        # ✅ FIXED: 4 значения БЕЗ ОШИБОК СИНТАКСИСА
         await db.executemany('INSERT OR IGNORE INTO promocodes (code,reward,max_uses,used) VALUES (?,?,?,?)', [
-    ('LAUNCH100', 100, 100, 0),
-    ('VIP7', 0, 10, 0),
-    ('DONAT500', 500,
+            ('LAUNCH100', 100, 100, 0),
+            ('VIP7', 0, 10, 0),
+            ('DONAT500', 500, 50, 0),
+            ('TEST999', 999, 5, 0)
+        ])
         
         # Миссии
         await db.executemany('INSERT OR IGNORE INTO missions (description,reward_min,reward_max,type) VALUES (?,?,?,?)', [
@@ -158,7 +160,7 @@ async def init_db():
         ])
         
         await db.commit()
-    print("✅ БД инициализирована: 25 предметов + кланы + рейды")
+    print("✅ БД инициализирована: 25 предметов + 4 промокода + кланы + рейды")
 
 async def get_user(user_id: int) -> Dict[str, Any]:
     """👤 Получить/создать пользователя"""
