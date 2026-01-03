@@ -17,7 +17,6 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID_ENV = os.getenv("ADMIN_ID")
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME")
 
-# Проверка на наличие переменных
 if not BOT_TOKEN or not ADMIN_ID_ENV or not ADMIN_USERNAME:
     raise ValueError("Ошибка: проверьте .env, должны быть BOT_TOKEN, ADMIN_ID, ADMIN_USERNAME")
 
@@ -35,7 +34,6 @@ DB_FILE = "game_bot.db"
 
 async def init_db():
     async with aiosqlite.connect(DB_FILE) as db:
-        # Пользователи
         await db.execute("""CREATE TABLE IF NOT EXISTS users(
                             user_id INTEGER PRIMARY KEY,
                             username TEXT,
@@ -45,19 +43,20 @@ async def init_db():
                             duels_won INTEGER DEFAULT 0,
                             duels_lost INTEGER DEFAULT 0
                             )""")
-        # Промокоды
         await db.execute("""CREATE TABLE IF NOT EXISTS promo_codes(
                             code TEXT PRIMARY KEY,
                             currency INTEGER,
                             uses_left INTEGER,
                             expires_at TEXT
                             )""")
-        # Дуэли (активные вызовы)
         await db.execute("""CREATE TABLE IF NOT EXISTS duels(
                             challenger_id INTEGER,
                             opponent_id INTEGER,
                             bet INTEGER,
                             status TEXT DEFAULT 'pending'
+                            )""")
+        await db.execute("""CREATE TABLE IF NOT EXISTS banned_users(
+                            user_id INTEGER PRIMARY KEY
                             )""")
         await db.commit()
     print("✅ Database initialized")
@@ -127,7 +126,7 @@ SHOP_ITEMS = {
 
 # Ограничение добычи валюты
 LAST_MINE = {}
-MINE_COOLDOWN = 60  # 60 секунд между добычами
+MINE_COOLDOWN = 60  # секунд
 
 # =========================
 # Главное меню
@@ -149,7 +148,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Главное меню:", reply_markup=InlineKeyboardMarkup(kb))
 
 # =========================
-# Кнопки и функционал
+# Кнопки
 # =========================
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -258,9 +257,88 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         await query.edit_message_text("Админ-панель:", reply_markup=InlineKeyboardMarkup(kb))
 
+    elif data.startswith("admin_") and user_id in ADMIN_IDS:
+        # Сохраняем действие администратора
+        context.user_data['admin_action'] = data
+
     # ---------- ВОЗВРАТ В МЕНЮ ----------
     elif data == "start":
         await start(update, context)
+
+# =========================
+# Обработка ввода промокода и админских команд
+# =========================
+async def message_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text.strip()
+
+    # Проверка на админа
+    if user_id in ADMIN_IDS:
+        action = context.user_data.get('admin_action')
+        if action:
+            # Обработка админ-команд
+            if action == "admin_currency":
+                try:
+                    target_id, amount = map(int, text.split())
+                    await update_balance(target_id, amount)
+                    await update.message.reply_text(f"✅ Выдали {amount} валюты пользователю {target_id}")
+                except:
+                    await update.message.reply_text("❌ Ошибка формата. Используйте: ID сумма")
+            elif action == "admin_vip":
+                try:
+                    target_id, days = map(int, text.split())
+                    expires = (datetime.utcnow() + timedelta(days=days)).isoformat()
+                    async with aiosqlite.connect(DB_FILE) as db:
+                        await db.execute("UPDATE users SET vip_until=? WHERE user_id=?", (expires, target_id))
+                        await db.commit()
+                    await update.message.reply_text(f"✅ Выдали VIP на {days} дней пользователю {target_id}")
+                except:
+                    await update.message.reply_text("❌ Ошибка формата. Используйте: ID дней")
+            elif action == "admin_ban":
+                try:
+                    target_id = int(text)
+                    async with aiosqlite.connect(DB_FILE) as db:
+                        await db.execute("INSERT OR IGNORE INTO banned_users(user_id) VALUES(?)", (target_id,))
+                        await db.commit()
+                    await update.message.reply_text(f"✅ Пользователь {target_id} забанен")
+                except:
+                    await update.message.reply_text("❌ Ошибка формата. Введите ID пользователя")
+            elif action == "admin_unban":
+                try:
+                    target_id = int(text)
+                    async with aiosqlite.connect(DB_FILE) as db:
+                        await db.execute("DELETE FROM banned_users WHERE user_id=?", (target_id,))
+                        await db.commit()
+                    await update.message.reply_text(f"✅ Пользователь {target_id} разбанен")
+                except:
+                    await update.message.reply_text("❌ Ошибка формата. Введите ID пользователя")
+            elif action == "admin_promo_create":
+                try:
+                    code, currency, uses, expires = text.split()
+                    currency = int(currency)
+                    uses = int(uses)
+                    async with aiosqlite.connect(DB_FILE) as db:
+                        await db.execute("INSERT INTO promo_codes(code, currency, uses_left, expires_at) VALUES(?,?,?,?)",
+                                         (code, currency, uses, expires))
+                        await db.commit()
+                    await update.message.reply_text(f"✅ Промокод {code} создан")
+                except Exception as e:
+                    await update.message.reply_text(f"❌ Ошибка: {e}")
+            elif action == "admin_promo_delete":
+                try:
+                    code = text
+                    async with aiosqlite.connect(DB_FILE) as db:
+                        await db.execute("DELETE FROM promo_codes WHERE code=?", (code,))
+                        await db.commit()
+                    await update.message.reply_text(f"✅ Промокод {code} удалён")
+                except Exception as e:
+                    await update.message.reply_text(f"❌ Ошибка: {e}")
+            context.user_data['admin_action'] = None
+            return
+
+    # Если не админ или обычный пользователь вводит текст
+    result = await use_promocode(user_id, text)
+    await update.message.reply_text(result)
 
 # =========================
 # Основной запуск
@@ -270,15 +348,7 @@ async def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_callback))
-
-    # Обработчик ввода промокода
-    async def promo_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user_id = update.effective_user.id
-        code = update.message.text.strip()
-        result = await use_promocode(user_id, code)
-        await update.message.reply_text(result)
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, promo_input))
-
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_input))
     print("✅ Bot is running")
     await app.run_polling()
 
