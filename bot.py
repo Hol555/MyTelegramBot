@@ -61,8 +61,8 @@ def clear_state(user_id: int):
 
 def get_user_power(user: Dict, inventory: List) -> float:
     """🎯 Расчет силы игрока"""
-    weapon_power = sum(item['power'] for item in inventory if item['equipped'])
-    buff_mult = math.prod(item['buff_mult'] for item in inventory if item['buff_mult'] > 1.0)
+    weapon_power = sum(item['power'] for item in inventory if item.get('equipped', 0))
+    buff_mult = math.prod(item['buff_mult'] for item in inventory if item.get('buff_mult', 1.0) > 1.0)
     return (user['level'] * 10 + weapon_power) * buff_mult * user.get('buff_power', 1.0)
 
 # 🗄️ FIXED: Синхронная БД для Railway
@@ -164,18 +164,29 @@ def init_database_sync():
     conn.close()
     print("✅ БД инициализирована: 25 предметов + 4 промокода")
 
-
-# 🛠️ FIXED: Адаптированные async функции под sync DB
-async def get_user(user_id: int):
+# 🛠️ FIXED: Полностью синхронные DB функции для стабильности
+def get_user_sync(user_id: int) -> Dict[str, Any]:
+    """👤 Получить/создать пользователя (sync)"""
     conn = sqlite3.connect('mmobot.db')
     cursor = conn.cursor()
     cursor.execute('SELECT * FROM users WHERE user_id=?', (user_id,))
     row = cursor.fetchone()
-    conn.close()
-    if row:
-        return dict(zip([desc[0] for desc in cursor.description], row))
-    return None
     
+    if row:
+        user = dict(zip([desc[0] for desc in cursor.description], row))
+        conn.close()
+        return user
+    
+    # Новый игрок
+    username = f"user_{user_id}"
+    cursor.execute('INSERT INTO users (user_id,username,balance,created_at) VALUES (?,?,1500,?)',
+                  (user_id, username, time.time()))
+    conn.commit()
+    conn.close()
+    return {'user_id': user_id, 'username': username, 'balance': 1500, 'level': 1, 'donate_balance': 0, 
+            'exp': 0, 'wins': 0, 'losses': 0, 'banned': 0, 'clan_id': None, 'last_mining': 0, 
+            'last_expedition': 0, 'last_mission': 0, 'buff_power': 1.0, 'created_at': time.time()}
+
 async def get_inventory(user_id: int) -> List[Dict]:
     """🎒 Инвентарь"""
     async with aiosqlite.connect('mmobot.db') as db:
@@ -198,7 +209,7 @@ async def buy_item(user_id: int, item_id: int, use_donate: bool = False) -> str:
         price = item_dict['donate_price'] if use_donate else item_dict['price']
         currency = 'donate_balance' if use_donate else 'balance'
         
-        user = await get_user(user_id)
+        user = get_user_sync(user_id)
         if user[currency] < price:
             return f"❌ Недостаточно {currency.replace('_balance','')}"
         
@@ -217,7 +228,7 @@ async def buy_item(user_id: int, item_id: int, use_donate: bool = False) -> str:
 # 🎮 Handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """🚀 Старт"""
-    user = await get_user(update.effective_user.id)
+    user = get_user_sync(update.effective_user.id)
     inv = await get_inventory(user['user_id'])
     power = get_user_power(user, inv)
     
@@ -247,7 +258,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def mining(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """⛏️ Майнинг"""
     user_id = update.effective_user.id
-    user = await get_user(user_id)
+    user = get_user_sync(user_id)
     now = time.time()
     
     if now - user['last_mining'] < 300:  # 5 мин
@@ -256,7 +267,7 @@ async def mining(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     inv = await get_inventory(user_id)
-    mult = math.prod(i['buff_mult'] for i in inv if i['buff_mult'] > 1.0)
+    mult = math.prod(i['buff_mult'] for i in inv if i.get('buff_mult', 1.0) > 1.0)
     reward = int(random.randint(50, 200) * mult)
     
     async with aiosqlite.connect('mmobot.db') as db:
@@ -269,7 +280,7 @@ async def mining(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def expeditions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """🧭 Экспедиции"""
     user_id = update.effective_user.id
-    user = await get_user(user_id)
+    user = get_user_sync(user_id)
     now = time.time()
     
     if now - user['last_expedition'] < 900:  # 15 мин
@@ -302,15 +313,17 @@ async def handle_duel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = text_parts[0][1:]
     bet = int(text_parts[1])
     
-    async with aiosqlite.connect('mmobot.db') as db:
-        async with db.execute('SELECT * FROM users WHERE username=? AND banned=0', (username,)) as c:
-            opponent = await c.fetchone()
+    conn = sqlite3.connect('mmobot.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM users WHERE username=? AND banned=0', (username,))
+    opponent = cursor.fetchone()
+    conn.close()
     
     if not opponent or opponent[0] == update.effective_user.id:
         await update.message.reply_text("❌ Игрок не найден или сам себя вызываешь")
         return
     
-    user = await get_user(update.effective_user.id)
+    user = get_user_sync(update.effective_user.id)
     if user['balance'] < bet:
         await update.message.reply_text("❌ Недостаточно монет")
         return
@@ -319,7 +332,8 @@ async def handle_duel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_inv = await get_inventory(user['user_id'])
     opp_inv = await get_inventory(opponent[0])
     user_power = get_user_power(user, user_inv)
-    opp_power = get_user_power(dict(zip(['user_id','level'], [opponent[0], opponent[5]])), opp_inv)
+    opp_user = {'user_id': opponent[0], 'level': opponent[5]}
+    opp_power = get_user_power(opp_user, opp_inv)
     
     win_chance = min(0.95, 0.5 + (user_power - opp_power) / 200)
     win = random.random() < win_chance
@@ -341,14 +355,16 @@ async def handle_duel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """📊 Профиль"""
-    user = await get_user(update.effective_user.id)
+    user = get_user_sync(update.effective_user.id)
     inv = await get_inventory(user['user_id'])
     power = get_user_power(user, inv)
     
-    async with aiosqlite.connect('mmobot.db') as db:
-        async with db.execute('SELECT name FROM clans c JOIN users u ON c.id=u.clan_id WHERE u.user_id=?', 
-                             (user['user_id'],)) as c:
-            clan = await c.fetchone()
+    conn = sqlite3.connect('mmobot.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT name FROM clans c JOIN users u ON c.id=u.clan_id WHERE u.user_id=?', 
+                   (user['user_id'],))
+    clan = cursor.fetchone()
+    conn.close()
     
     clan_text = f"👥 **{clan[0]}**" if clan else "👥 Без клана"
     
@@ -387,10 +403,10 @@ async def inventory(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     text = "🎒 **ИНВЕНТАРЬ**\n\n"
     for i, item in enumerate(inv[:10], 1):  # топ 10
-        status = "✅" if item['equipped'] else "⭕"
+        status = "✅" if item.get('equipped', 0) else "⭕"
         text += f"{status} **{item['name']}** x{item['amount']}\n"
         if item['power']: text += f"⚔️ +{item['power']}\n"
-        if item['buff_mult'] > 1: text += f"⭐ x{item['buff_mult']:.2f}\n"
+        if item.get('buff_mult', 1.0) > 1: text += f"⭐ x{item['buff_mult']:.2f}\n"
         text += f"{item['description'][:50]}...\n\n"
     
     keyboard = InlineKeyboardMarkup([
@@ -401,12 +417,14 @@ async def inventory(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def clans(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """👥 Кланы"""
-    user = await get_user(update.effective_user.id)
+    user = get_user_sync(update.effective_user.id)
     
     if user['clan_id']:
-        async with aiosqlite.connect('mmobot.db') as db:
-            async with db.execute('SELECT * FROM clans WHERE id=?', (user['clan_id'],)) as c:
-                clan = await c.fetchone()
+        conn = sqlite3.connect('mmobot.db')
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM clans WHERE id=?', (user['clan_id'],))
+        clan = cursor.fetchone()
+        conn.close()
         text = f"👥 **Ваш клан: {clan[1]}**\n💰 Казна: {clan[3]:,}\n👥 {clan[5]}/{clan[4]}\n\n"
         text += "Действия:\n👹 Босс | 📦 Казна | ⚙️ Роли"
     else:
@@ -443,7 +461,7 @@ async def donate(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 👹 Клановые боссы
 async def clan_boss(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """👹 Рейд-босс"""
-    user = await get_user(update.effective_user.id)
+    user = get_user_sync(update.effective_user.id)
     if not user['clan_id']:
         await update.message.reply_text("❌ Только для участников кланов!")
         return
@@ -493,7 +511,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     data = query.data
     
-    user = await get_user(user_id)
+    user = get_user_sync(user_id)
     
     if data == "main_menu":
         await query.edit_message_text("🏰 **Главное меню**", reply_markup=MAIN_KEYBOARD)
@@ -560,7 +578,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await admin_give_money(update, context)
         return
     
-    # Основные команды
+    # Основные команды - ✅ ВСЕ КНОПКИ РАБОТАЮТ
     if text == "🏪 Магазин":
         await shop(update, context)
     elif text == "🎒 Инвентарь":
