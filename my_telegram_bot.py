@@ -166,7 +166,7 @@ def init_database_sync():
 
 
 # 🛠️ FIXED: Адаптированные async функции под sync DB
-async def get_user_sync(user_id: int):
+async def get_user(user_id: int):
     conn = sqlite3.connect('mmobot.db')
     cursor = conn.cursor()
     cursor.execute('SELECT * FROM users WHERE user_id=?', (user_id,))
@@ -175,7 +175,7 @@ async def get_user_sync(user_id: int):
     if row:
         return dict(zip([desc[0] for desc in cursor.description], row))
     return None
-
+    
 async def get_inventory(user_id: int) -> List[Dict]:
     """🎒 Инвентарь"""
     async with aiosqlite.connect('mmobot.db') as db:
