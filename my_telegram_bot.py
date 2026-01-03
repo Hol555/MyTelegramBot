@@ -77,7 +77,7 @@ async def init_db(application: Application):
         await db.commit()
         logger.info("✅ База данных инициализирована")
 
-# Утилиты (без изменений)
+# Утилиты
 async def get_user_data(user_id):
     async with aiosqlite.connect('bot.db') as db:
         async with db.execute('SELECT * FROM users WHERE user_id = ?', (user_id,)) as cursor:
@@ -183,12 +183,17 @@ def duel_menu():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-def duel_rooms_menu(rooms):
+# ✅ ИСПРАВЛЕНО: duel_rooms_menu теперь async
+async def duel_rooms_menu(rooms, context: ContextTypes.DEFAULT_TYPE):
     keyboard = []
     for room_id, room_data in rooms.items():
-        host = await get_user_data(room_data['host_id'])
+        host_data = await get_user_data(room_data['host_id'])
+        if host_data:
+            username = host_data[1] or f"user{room_data['host_id']}"
+        else:
+            username = f"user{room_data['host_id']}"
         keyboard.append([InlineKeyboardButton(
-            f"Комната {room_id}: @{host[1]} {room_data['bet']}₽", 
+            f"Комната {room_id}: @{username} {room_data['bet']}₽", 
             callback_data=f"join_room_{room_id}"
         )])
     keyboard.append([InlineKeyboardButton("🔍 Искать дуэль", callback_data="duel_search")])
@@ -206,19 +211,22 @@ async def create_duel_room(user_id, bet):
     }
     # Удаляем старые комнаты (>5 мин)
     now = time.time()
+    global duel_rooms
     duel_rooms = {k: v for k, v in duel_rooms.items() if now - v['created'] < 300}
     return room_id
 
 async def get_active_rooms():
     now = time.time()
+    global duel_rooms
     active_rooms = {k: v for k, v in duel_rooms.items() if now - v['created'] < 300}
     return active_rooms
 
 async def cleanup_duel_rooms():
     now = time.time()
+    global duel_rooms
     expired = [k for k, v in duel_rooms.items() if now - v['created'] > 300]
     for room_id in expired:
-        del duel_rooms[room_id]
+        duel_rooms.pop(room_id, None)
 
 # Старт
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -228,9 +236,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     user = update.effective_user
     user_id = user.id
-    
-    # Рефералы (упрощенно)
-    bot_username = (await context.bot.get_me()).username
     
     async with aiosqlite.connect('bot.db') as db:
         await db.execute('''INSERT OR IGNORE INTO users (user_id, username, balance) 
@@ -249,7 +254,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text("👑 **Админ панель**", parse_mode='Markdown', reply_markup=admin_main_menu())
 
-# ✅ АДМИН ПАНЕЛЬ - ПОЛНАЯ РЕАЛИЗАЦИЯ
+# Обработчик админ команд
 async def handle_admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
@@ -326,33 +331,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "🛒 Магазин":
         await update.message.reply_text("🛒 **Донат магазин**\n\nВыберите предмет:", reply_markup=shop_menu())
     
-    elif text == "⛏️ Майнинг":
-        if await can_use_cooldown(user_id, 3):
-            await update.message.reply_text("⛏️ **Майнинг готов!**\n\nНажмите кнопку ⛏️ Копать", reply_markup=mining_menu())
-        else:
-            cooldown_left = int(user_data[3] - time.time())
-            await update.message.reply_text(f"⛏️ **Кулдаун:** {cooldown_left//60}:{cooldown_left%60:02d}", reply_markup=main_menu())
-    
-    elif text == "🗺️ Экспедиция":
-        await update.message.reply_text("🗺️ **Экспедиция**\n\nГотовы?", reply_markup=expedition_menu())
-    
     elif text == "💰 Баланс":
-        sword, crown, shield = user_data[13] or 0, user_data[14] or 0, user_data[15] or 0
-        items = [f"{user_data[13] or 0}⚔️", f"{user_data[14] or 0}👑", f"{user_data[15] or 0}🛡️"]
+        sword = user_data[13] or 0
+        crown = user_data[14] or 0
+        shield = user_data[15] or 0
+        items = [f"{sword}⚔️", f"{crown}👑", f"{shield}🛡️"]
         await update.message.reply_text(
             f"💰 **Баланс:** {balance:,}₽\n"
             f"🎁 **Предметы:** {' | '.join(items)}",
             parse_mode='Markdown', reply_markup=main_menu()
         )
-    
-    elif text == "👥 Кланы":
-        await update.message.reply_text("👥 **Кланы**\n\nСоздано кланов: 0", reply_markup=main_menu())
-    
-    elif text == "🎁 Промокод":
-        await update.message.reply_text("🎁 **Промокод**\n\nВведите код:", reply_markup=main_menu())
-    
-    elif text == "📊 Статистика":
-        await update.message.reply_text("📊 **Статистика**\n\nВ разработке...", reply_markup=main_menu())
     
     else:
         await update.message.reply_text("👆 Выберите кнопку меню", reply_markup=main_menu())
@@ -387,7 +375,6 @@ async def handle_admin_state(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text("❌ Неверная сумма!")
     
     elif state['state'] == 'admin_item_select':
-        target_username = None
         if text in ["⚔️ Легендарный меч", "👑 Королевская корона", "🛡️ Абсолютный щит"]:
             set_user_state(user_id, 'admin_item_username', {'item_name': text})
             await update.message.reply_text("👤 Введите username для выдачи предмета:")
@@ -433,7 +420,7 @@ async def handle_admin_state(update: Update, context: ContextTypes.DEFAULT_TYPE)
         else:
             await update.message.reply_text(f"❌ Пользователь @{text} не найден!")
 
-# ✅ CALLBACK ОБРАБОТЧИК
+# ✅ CALLBACK ОБРАБОТЧИК (ИСПРАВЛЕНО)
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global duel_rooms
     query = update.callback_query
@@ -471,7 +458,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await query.edit_message_text(f"❌ Недостаточно средств!\n💰 Нужно: {item[1]:,}₽", reply_markup=shop_menu())
     
-    # ⚔️ ДУЭЛИ - РЕАЛЬНЫЙ МАТЧМЕЙКИНГ
+    # ⚔️ ДУЭЛИ
     elif data == "duel_search":
         await query.edit_message_text(
             "⚔️ **Введите ставку (мин. 50₽):**\n"
@@ -490,71 +477,64 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("❌ Недостаточно средств!", show_alert=True)
             return
         
-        # Ищем подходящую комнату
         await cleanup_duel_rooms()
         opponent_room = None
         for room_id, room in duel_rooms.items():
-            if room['bet'] == bet and room['host_id'] != user_id and not room['challenger_id']:
+            if room['bet'] == bet and room['host_id'] != user_id and not room.get('challenger_id'):
                 opponent_room = room_id
                 break
         
         if opponent_room:
-            # НАЙДЕН СОПЕРНИК!
             room = duel_rooms[opponent_room]
             host_data = await get_user_data(room['host_id'])
             
-            await update_user_balance(user_id, -bet)  # Ставка challenger
-            await update_user_balance(room['host_id'], -bet)  # Ставка host
+            await update_user_balance(user_id, -bet)
+            await update_user_balance(room['host_id'], -bet)
             
             # Бой!
             if random.random() > 0.5:
                 winner_id, loser_id = user_id, room['host_id']
-                await update_user_balance(winner_id, bet * 2)
             else:
                 winner_id, loser_id = room['host_id'], user_id
-                await update_user_balance(winner_id, bet * 2)
             
-            # Уведомляем обоих
+            await update_user_balance(winner_id, bet * 2)
+            
             winner_data = await get_user_data(winner_id)
             loser_data = await get_user_data(loser_id)
+            winner_username = winner_data[1] or "Игрок"
+            loser_username = loser_data[1] or "Игрок"
             
             await query.edit_message_text(
                 f"⚔️ **Дуэль завершена!**\n\n"
-                f"🏆 Победитель: @{winner_data[1]}\n"
+                f"🏆 Победитель: @{winner_username}\n"
                 f"💰 Награда: {bet * 2:,}₽\n"
-                f"💥 Проигравший: @{loser_data[1]}",
+                f"💥 Проигравший: @{loser_username}",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔍 Новая дуэль", callback_data="duel_search")],
                     [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
                 ])
             )
             
-            # Уведомление хозяину комнаты
+            # Уведомление хозяину
             try:
                 await context.bot.send_message(
                     room['host_id'],
                     f"⚔️ **Дуэль завершена!**\n\n"
-                    f"🏆 Победитель: @{winner_data[1]}\n"
+                    f"🏆 Победитель: @{winner_username}\n"
                     f"💰 Награда: {bet * 2:,}₽\n"
-                    f"💥 Проигравший: @{loser_data[1]}",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🔍 Новая дуэль", callback_data="duel_search")],
-                        [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
-                    ])
+                    f"💥 Проигравший: @{loser_username}"
                 )
             except:
                 pass
             
-            del duel_rooms[opponent_room]
+            duel_rooms.pop(opponent_room, None)
             
         else:
-            # Создаем комнату
             room_id = await create_duel_room(user_id, bet)
             await query.edit_message_text(
                 f"✅ **Комната {room_id} создана!**\n"
                 f"💰 Ставка: {bet:,}₽\n"
-                f"⏰ Автоудаление: 5 минут\n\n"
-                f"🔍 Другие игроки могут войти!",
+                f"⏰ Автоудаление: 5 минут",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("❌ Закрыть комнату", callback_data=f"close_room_{room_id}")],
                     [InlineKeyboardButton("📋 Посмотреть комнаты", callback_data="duel_rooms")],
@@ -565,35 +545,23 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "duel_rooms":
         rooms = await get_active_rooms()
         if rooms:
-            await query.edit_message_text("📋 **Активные комнаты:**", reply_markup=duel_rooms_menu(rooms))
+            markup = await duel_rooms_menu(rooms, context)
+            await query.edit_message_text("📋 **Активные комнаты:**", reply_markup=markup)
         else:
             await query.edit_message_text("📭 **Нет активных комнат**\n\n🔍 Создайте свою!", reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔍 Искать дуэль", callback_data="duel_search")],
                 [InlineKeyboardButton("🔙 Дуэли", callback_data="duel_back")]
             ]))
     
-    elif data.startswith("join_room_"):
-        room_id = int(data.split('_')[2])
-        if room_id in duel_rooms and not duel_rooms[room_id]['challenger_id']:
-            # Логика дуэли уже выше в duel_bet_
-            await query.answer("Комната больше не активна!", show_alert=True)
-        else:
-            await query.answer("Комната заполнена!", show_alert=True)
-    
     elif data.startswith("close_room_"):
         room_id = int(data.split('_')[2])
         if room_id in duel_rooms and duel_rooms[room_id]['host_id'] == user_id:
-            # Возвращаем ставку
             await update_user_balance(user_id, duel_rooms[room_id]['bet'])
-            del duel_rooms[room_id]
+            duel_rooms.pop(room_id, None)
             await query.edit_message_text("❌ **Комната закрыта**\n💰 Ставка возвращена", reply_markup=duel_menu())
     
     elif data == "duel_back":
         await query.edit_message_text("⚔️ **Дуэли**", reply_markup=duel_menu())
-    
-    # Остальные кнопки (майнинг, экспедиция - упрощенно)
-    elif data == "mining_menu":
-        await query.edit_message_text("⛏️ **Майнинг**", reply_markup=mining_menu())
     
     else:
         await query.edit_message_text("🏠 **Главное меню**", reply_markup=main_menu())
