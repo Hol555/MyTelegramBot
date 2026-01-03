@@ -145,8 +145,9 @@ async def init_db():
         
         # Промокоды
         await db.executemany('INSERT OR IGNORE INTO promocodes (code,reward,max_uses,used) VALUES (?,?,?,?)', [
-            ('LAUNCH100', 100, 100, 0), ('DONAT500', 500, 50, 0), ('VIP7', 777, 10, 0), ('TEST999', 999, 5, 0)
-        ])
+    ('LAUNCH100', 100, 100, 0),
+    ('VIP7', 0, 10, 0),
+    ('DONAT500', 500,
         
         # Миссии
         await db.executemany('INSERT OR IGNORE INTO missions (description,reward_min,reward_max,type) VALUES (?,?,?,?)', [
