@@ -156,7 +156,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("⚔ Дуэли", callback_data="duels")],
         [InlineKeyboardButton("🏹 Экспедиции", callback_data="expeditions")],
         [InlineKeyboardButton("📊 Топ-10", callback_data="top10")],
-        [InlineKeyboardButton("💰 Купить VIP", url="https://t.me/<YOUR_USERNAME>")]
+        [InlineKeyboardButton("💰 Купить VIP", url="https://t.me/soblaznss")]
     ]
     await update.message.reply_text(
         f"Привет, {user.first_name}! Выбери действие:",
