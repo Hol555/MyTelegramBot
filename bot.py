@@ -10,7 +10,7 @@ from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, Callb
 # =========================
 # Настройки
 # =========================
-BOT_TOKEN = "ВАШ_BOT_TOKEN"
+BOT_TOKEN = "7766252776:AAF-Eif3iud_CiBPr5RA28auoTTu79dzxFw"
 ADMIN_IDS = [7591100907]  # твой ID
 ADMIN_USERNAME = "soblaznss"
 
