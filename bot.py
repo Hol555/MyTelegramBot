@@ -65,109 +65,116 @@ def get_user_power(user: Dict, inventory: List) -> float:
     buff_mult = math.prod(item['buff_mult'] for item in inventory if item['buff_mult'] > 1.0)
     return (user['level'] * 10 + weapon_power) * buff_mult * user.get('buff_power', 1.0)
 
-# 🗄️ Database
-async def init_db():
-    """🔧 Инициализация БД (Railway safe - FIXED)"""
-    async with aiosqlite.connect('mmobot.db') as db:
-        await db.execute('''CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY, username TEXT, balance INTEGER DEFAULT 1000,
-            donate_balance INTEGER DEFAULT 0, exp INTEGER DEFAULT 0, level INTEGER DEFAULT 1,
-            wins INTEGER DEFAULT 0, losses INTEGER DEFAULT 0, banned INTEGER DEFAULT 0,
-            clan_id INTEGER DEFAULT NULL, last_mining REAL DEFAULT 0, last_expedition REAL DEFAULT 0,
-            last_mission REAL DEFAULT 0, buff_power REAL DEFAULT 1.0, created_at REAL DEFAULT 0
-        )''')
-        
-        await db.execute('''CREATE TABLE IF NOT EXISTS inventory (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, item_id INTEGER,
-            amount INTEGER DEFAULT 1, equipped INTEGER DEFAULT 0
-        )''')
-        
-        await db.execute('''CREATE TABLE IF NOT EXISTS items (
-            id INTEGER PRIMARY KEY, name TEXT, item_type TEXT, description TEXT,
-            power INTEGER DEFAULT 0, buff_mult REAL DEFAULT 1.0, price INTEGER,
-            donate_price INTEGER, clan_effect TEXT, max_stack INTEGER DEFAULT 999
-        )''')
-        
-        await db.execute('''CREATE TABLE IF NOT EXISTS clans (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, owner_id INTEGER,
-            treasury INTEGER DEFAULT 0, member_limit INTEGER DEFAULT 10, member_count INTEGER DEFAULT 1
-        )''')
-        
-        await db.execute('''CREATE TABLE IF NOT EXISTS clan_roles (
-            clan_id INTEGER, user_id INTEGER, can_invite INTEGER DEFAULT 0, can_kick INTEGER DEFAULT 0,
-            can_manage_roles INTEGER DEFAULT 0, can_attack_boss INTEGER DEFAULT 0, can_use_treasury INTEGER DEFAULT 0,
-            PRIMARY KEY(clan_id, user_id)
-        )''')
-        
-        await db.execute('''CREATE TABLE IF NOT EXISTS clan_bosses (
-            clan_id INTEGER PRIMARY KEY, last_attack REAL DEFAULT 0, attacks_today INTEGER DEFAULT 0
-        )''')
-        
-        await db.execute('''CREATE TABLE IF NOT EXISTS missions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, description TEXT, reward_min INTEGER,
-            reward_max INTEGER, type TEXT DEFAULT 'daily'
-        )''')
-        
-        await db.execute('''CREATE TABLE IF NOT EXISTS promocodes (
-            code TEXT PRIMARY KEY, reward INTEGER, max_uses INTEGER, used INTEGER DEFAULT 0
-        )''')
-        
-        # 🎁 25 предметов
-        items_data = [
-            (1, "Деревянный меч", "weapon", "Базовое оружие +10 урона", 10, 1.0, 100, 1, None, 1),
-            (2, "Стальной меч", "weapon", "+25 урона", 25, 1.0, 500, 5, None, 1),
-            (3, "Легендарный меч", "weapon", "Эпическое +50 урона", 50, 1.0, 2000, 20, None, 1),
-            (4, "Королевская корона", "weapon", "+40 урона + харизма", 40, 1.1, 5000, 50, None, 1),
-            (5, "Кинжал тени", "weapon", "+35 урона + крит", 35, 1.15, 1800, 18, None, 1),
-            (6, "Огненный шар", "weapon", "AoE +45 урона", 45, 1.0, 2800, 28, None, 1),
-            (7, "Кожаная броня", "armor", "Базовая +15 HP", 15, 1.0, 150, 2, None, 1),
-            (8, "Пластинчатая броня", "armor", "+35 HP", 35, 1.0, 800, 8, None, 1),
-            (9, "Абсолютный щит", "armor", "Макс +60 HP", 60, 1.0, 3000, 30, None, 1),
-            (10, "Ледяной доспех", "armor", "+55 HP + заморозка", 55, 1.05, 3500, 35, None, 1),
-            (11, "Зелье силы", "buff", "+20% урона 1ч", 0, 1.2, 300, 3, None, 10),
-            (12, "Камень удачи", "buff", "+15% майнинг", 0, 1.15, 400, 4, None, 5),
-            (13, "Кристалл фарма", "buff", "+25% фарм", 0, 1.25, 1500, 15, None, 5),
-            (14, "Кольцо мастерства", "buff", "Постоянно +5%", 0, 1.05, 2500, 25, None, 1),
-            (15, "Свиток знаний", "buff", "+50% EXP 24ч", 0, 1.5, 600, 6, None, 3),
-            (16, "Эликсир HP", "resource", "+100 HP", 100, 1.0, 50, 1, None, 20),
-            (17, "Сфера энергии", "resource", "Полное восстановление", 200, 1.0, 200, 2, None, 10),
-            (18, "Ключ сокровищницы", "resource", "Случайный лут", 0, 1.0, 1000, 10, None, 1),
-            (19, "Расширение клана", "expansion", "+5 слотов клана", 0, 1.0, 50000, 50, None, 1),
-            (20, "Бафф клана: Урон", "clan_buff", "+10% рейды", 0, 1.1, 10000, 100, "raid_damage", 1),
-            (21, "Бафф клана: Защита", "clan_buff", "+15% рейды", 0, 1.15, 12000, 120, "raid_defense", 1),
-            (22, "Талисман лидера", "clan_buff", "+5% казна", 0, 1.05, 8000, 80, "clan_treasury", 1),
-            (23, "Кубок чемпиона", "buff", "+30% PvP", 0, 1.3, 10000, 100, None, 1),
-            (24, "Щит героя", "armor", "+50 HP + уклонение", 50, 1.1, 4000, 40, None, 1),
-            (25, "Мантия волшебника", "armor", "+30 HP + магия", 30, 1.2, 2200, 22, None, 1)
-        ]
-        
-        await db.executemany('INSERT OR IGNORE INTO items VALUES (?,?,?,?,?,?,?,?,?,?)', items_data)
-        
-        # ✅ FIXED: 4 значения БЕЗ ОШИБОК СИНТАКСИСА
-        await db.executemany('INSERT OR IGNORE INTO promocodes (code,reward,max_uses,used) VALUES (?,?,?,?)', [
-            ('LAUNCH100', 100, 100, 0),
-            ('VIP7', 0, 10, 0),
-            ('TEST999', 999, 5, 0)
-        ])
-        
-        # Миссии
-        await db.executemany('INSERT OR IGNORE INTO missions (description,reward_min,reward_max,type) VALUES (?,?,?,?)', [
-            ('Соберите 500 монет', 100, 200, 'collect'),
-            ('Победите в 3 дуэлях', 200, 400, 'pvp'),
-            ('Проведите 2 экспедиции', 150, 300, 'explore'),
-            ('Получите 1000 EXP', 250, 500, 'levelup')
-        ])
-        
-        await db.commit()
-    print("✅ БД инициализирована: 25 предметов + 4 промокода + кланы + рейды")
+# 🗄️ FIXED: Синхронная БД для Railway
+def init_database_sync():
+    """🔧 Синхронная БД (Railway safe)"""
+    conn = sqlite3.connect('mmobot.db')
+    cursor = conn.cursor()
+    
+    # Все таблицы
+    cursor.execute('''CREATE TABLE IF NOT EXISTS users (
+        user_id INTEGER PRIMARY KEY, username TEXT, balance INTEGER DEFAULT 1000,
+        donate_balance INTEGER DEFAULT 0, exp INTEGER DEFAULT 0, level INTEGER DEFAULT 1,
+        wins INTEGER DEFAULT 0, losses INTEGER DEFAULT 0, banned INTEGER DEFAULT 0,
+        clan_id INTEGER DEFAULT NULL, last_mining REAL DEFAULT 0, last_expedition REAL DEFAULT 0,
+        last_mission REAL DEFAULT 0, buff_power REAL DEFAULT 1.0, created_at REAL DEFAULT 0
+    )''')
+    
+    cursor.execute('''CREATE TABLE IF NOT EXISTS inventory (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, item_id INTEGER,
+        amount INTEGER DEFAULT 1, equipped INTEGER DEFAULT 0
+    )''')
+    
+    cursor.execute('''CREATE TABLE IF NOT EXISTS items (
+        id INTEGER PRIMARY KEY, name TEXT, item_type TEXT, description TEXT,
+        power INTEGER DEFAULT 0, buff_mult REAL DEFAULT 1.0, price INTEGER,
+        donate_price INTEGER, clan_effect TEXT, max_stack INTEGER DEFAULT 999
+    )''')
+    
+    cursor.execute('''CREATE TABLE IF NOT EXISTS clans (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, owner_id INTEGER,
+        treasury INTEGER DEFAULT 0, member_limit INTEGER DEFAULT 10, member_count INTEGER DEFAULT 1
+    )''')
+    
+    cursor.execute('''CREATE TABLE IF NOT EXISTS clan_roles (
+        clan_id INTEGER, user_id INTEGER, can_invite INTEGER DEFAULT 0, can_kick INTEGER DEFAULT 0,
+        can_manage_roles INTEGER DEFAULT 0, can_attack_boss INTEGER DEFAULT 0, can_use_treasury INTEGER DEFAULT 0,
+        PRIMARY KEY(clan_id, user_id)
+    )''')
+    
+    cursor.execute('''CREATE TABLE IF NOT EXISTS clan_bosses (
+        clan_id INTEGER PRIMARY KEY, last_attack REAL DEFAULT 0, attacks_today INTEGER DEFAULT 0
+    )''')
+    
+    cursor.execute('''CREATE TABLE IF NOT EXISTS missions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, description TEXT, reward_min INTEGER,
+        reward_max INTEGER, type TEXT DEFAULT 'daily'
+    )''')
+    
+    cursor.execute('''CREATE TABLE IF NOT EXISTS promocodes (
+        code TEXT PRIMARY KEY, reward INTEGER, max_uses INTEGER, used INTEGER DEFAULT 0
+    )''')
+    
+    # 🎁 25 предметов
+    items_data = [
+        (1, "Деревянный меч", "weapon", "Базовое оружие +10 урона", 10, 1.0, 100, 1, None, 1),
+        (2, "Стальной меч", "weapon", "+25 урона", 25, 1.0, 500, 5, None, 1),
+        (3, "Легендарный меч", "weapon", "Эпическое +50 урона", 50, 1.0, 2000, 20, None, 1),
+        (4, "Королевская корона", "weapon", "+40 урона + харизма", 40, 1.1, 5000, 50, None, 1),
+        (5, "Кинжал тени", "weapon", "+35 урона + крит", 35, 1.15, 1800, 18, None, 1),
+        (6, "Огненный шар", "weapon", "AoE +45 урона", 45, 1.0, 2800, 28, None, 1),
+        (7, "Кожаная броня", "armor", "Базовая +15 HP", 15, 1.0, 150, 2, None, 1),
+        (8, "Пластинчатая броня", "armor", "+35 HP", 35, 1.0, 800, 8, None, 1),
+        (9, "Абсолютный щит", "armor", "Макс +60 HP", 60, 1.0, 3000, 30, None, 1),
+        (10, "Ледяной доспех", "armor", "+55 HP + заморозка", 55, 1.05, 3500, 35, None, 1),
+        (11, "Зелье силы", "buff", "+20% урона 1ч", 0, 1.2, 300, 3, None, 10),
+        (12, "Камень удачи", "buff", "+15% майнинг", 0, 1.15, 400, 4, None, 5),
+        (13, "Кристалл фарма", "buff", "+25% фарм", 0, 1.25, 1500, 15, None, 5),
+        (14, "Кольцо мастерства", "buff", "Постоянно +5%", 0, 1.05, 2500, 25, None, 1),
+        (15, "Свиток знаний", "buff", "+50% EXP 24ч", 0, 1.5, 600, 6, None, 3),
+        (16, "Эликсир HP", "resource", "+100 HP", 100, 1.0, 50, 1, None, 20),
+        (17, "Сфера энергии", "resource", "Полное восстановление", 200, 1.0, 200, 2, None, 10),
+        (18, "Ключ сокровищницы", "resource", "Случайный лут", 0, 1.0, 1000, 10, None, 1),
+        (19, "Расширение клана", "expansion", "+5 слотов клана", 0, 1.0, 50000, 50, None, 1),
+        (20, "Бафф клана: Урон", "clan_buff", "+10% рейды", 0, 1.1, 10000, 100, "raid_damage", 1),
+        (21, "Бафф клана: Защита", "clan_buff", "+15% рейды", 0, 1.15, 12000, 120, "raid_defense", 1),
+        (22, "Талисман лидера", "clan_buff", "+5% казна", 0, 1.05, 8000, 80, "clan_treasury", 1),
+        (23, "Кубок чемпиона", "buff", "+30% PvP", 0, 1.3, 10000, 100, None, 1),
+        (24, "Щит героя", "armor", "+50 HP + уклонение", 50, 1.1, 4000, 40, None, 1),
+        (25, "Мантия волшебника", "armor", "+30 HP + магия", 30, 1.2, 2200, 22, None, 1)
+    ]
+    cursor.executemany('INSERT OR IGNORE INTO items VALUES (?,?,?,?,?,?,?,?,?,?)', items_data)
+    
+    # ✅ FIXED: 4 значения для promocodes
+    cursor.executemany('INSERT OR IGNORE INTO promocodes (code,reward,max_uses,used) VALUES (?,?,?,?)', [
+        ('LAUNCH100', 100, 100, 0),
+        ('VIP7', 0, 10, 0),
+        ('DONAT500', 500, 50, 0),
+        ('TEST999', 999, 5, 0)
+    ])
+    
+    cursor.executemany('INSERT OR IGNORE INTO missions (description,reward_min,reward_max,type) VALUES (?,?,?,?)', [
+        ('Соберите 500 монет', 100, 200, 'collect'),
+        ('Победите в 3 дуэлях', 200, 400, 'pvp'),
+        ('Проведите 2 экспедиции', 150, 300, 'explore'),
+        ('Получите 1000 EXP', 250, 500, 'levelup')
+    ])
+    
+    conn.commit()
+    conn.close()
+    print("✅ БД инициализирована: 25 предметов + 4 промокода")
 
-async def get_user(user_id: int) -> Dict[str, Any]:
-    """👤 Получить/создать пользователя"""
-    async with aiosqlite.connect('mmobot.db') as db:
-        async with db.execute('SELECT * FROM users WHERE user_id=?', (user_id,)) as c:
-            row = await c.fetchone()
-            if row:
-                return dict(zip([d[0] for d in c.description], row))
+
+# 🛠️ FIXED: Адаптированные async функции под sync DB
+async def get_user_sync(user_id: int):
+    conn = sqlite3.connect('mmobot.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM users WHERE user_id=?', (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return dict(zip([desc[0] for desc in cursor.description], row))
+    return None
         
         # Новый игрок
         username = f"user_{user_id}"
@@ -586,25 +593,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❓ Нажмите кнопку меню или используйте `@username amount` для дуэли")
 
+# ✅ FIXED MAIN - Railway Python 3.13
 def main():
-    """🚀 Запуск"""
+    """🚀 Запуск (Railway FIXED)"""
     if not BOT_TOKEN:
-        print("❌ BOT_TOKEN не найден в .env!")
+        print("❌ BOT_TOKEN не найден!")
         return
     
-    asyncio.run(init_db())
+    init_database_sync()  # ✅ Sync DB
     
+    print("🚀 Создание Application...")
     app = Application.builder().token(BOT_TOKEN).build()
     
+    # Все handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    print("🚀 MMO Bot v2.0 запущен! ✅")
-    print("📱 Railway: https://railway.app")
-    print("🔧 Admin ID:", ADMIN_ID)
+    print("✅ Bot handlers добавлены")
+    print("🔥 Railway deploy OK!")
     
+    # FIXED: Без asyncio.run
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
