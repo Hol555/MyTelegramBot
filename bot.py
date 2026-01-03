@@ -14,8 +14,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_IDS = [int(os.getenv("ADMIN_ID"))]  # теперь точно строку преобразуем в int
+ADMIN_ID_ENV = os.getenv("ADMIN_ID")
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME")
+
+# Проверка на наличие переменных
+if not BOT_TOKEN or not ADMIN_ID_ENV or not ADMIN_USERNAME:
+    raise ValueError("Ошибка: проверьте .env, должны быть BOT_TOKEN, ADMIN_ID, ADMIN_USERNAME")
+
+ADMIN_IDS = [int(ADMIN_ID_ENV)]
 
 # =========================
 # Исправляем event loop для asyncio
@@ -143,7 +149,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Главное меню:", reply_markup=InlineKeyboardMarkup(kb))
 
 # =========================
-# Кнопки
+# Кнопки и функционал
 # =========================
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -186,9 +192,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ---------- МАГАЗИН ----------
     elif data == "shop":
-        kb = []
-        for item, info in SHOP_ITEMS.items():
-            kb.append([InlineKeyboardButton(f"{item} ({info['price']})", callback_data=f"shop_{item}")])
+        kb = [[InlineKeyboardButton(f"{item} ({info['price']})", callback_data=f"shop_{item}")] for item, info in SHOP_ITEMS.items()]
         kb.append([InlineKeyboardButton("Вернуться в меню", callback_data="start")])
         await query.edit_message_text("Магазин:", reply_markup=InlineKeyboardMarkup(kb))
 
@@ -266,13 +270,15 @@ async def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_callback))
-    # обработчик ввода промокода
+
+    # Обработчик ввода промокода
     async def promo_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         code = update.message.text.strip()
         result = await use_promocode(user_id, code)
         await update.message.reply_text(result)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, promo_input))
+
     print("✅ Bot is running")
     await app.run_polling()
 
