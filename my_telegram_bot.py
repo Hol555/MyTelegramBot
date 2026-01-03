@@ -147,7 +147,6 @@ async def init_db():
         await db.executemany('INSERT OR IGNORE INTO promocodes (code,reward,max_uses,used) VALUES (?,?,?,?)', [
             ('LAUNCH100', 100, 100, 0),
             ('VIP7', 0, 10, 0),
-            ('DONAT500', 500, 50, 0),
             ('TEST999', 999, 5, 0)
         ])
         
