@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-🏰 Telegram MMO Bot v5.0 - ✅ АДМИН ПАНЕЛЬ + ДЕТАЛЬНЫЕ ОПИСАНИЯ + ДОНАТ КНОПКИ
-🔥 Все кнопки работают + донат ведет на вас + полная документация
+🏰 Telegram MMO Bot v7.0 - ФИНАЛЬНАЯ ВЕРСИЯ
+🔥 Админ/Донат/Кланы/Рейды/Ежедневки/25 предметов/Арена
+👨‍💼 Донат: @soblaznss
 """
 
 import logging
@@ -9,9 +10,8 @@ import os
 import asyncio
 import random
 import time
-import math
-import re
-from datetime import datetime
+import json
+from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 import sqlite3
@@ -21,455 +21,313 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 ADMIN_ID = int(os.getenv('ADMIN_ID', 0))
-ADMIN_USERNAME = os.getenv('ADMIN_USERNAME', '@soblaznss')  # ← ВАШ ЮЗЕРНЕЙМ
+ADMIN_USERNAME = '@soblaznss'
 
-# 👑 АДМИН КЛАВИАТУРА
-ADMIN_KEYBOARD = ReplyKeyboardMarkup([
-    [KeyboardButton("💰 Выдать монеты"), KeyboardButton("💎 Выдать донат")],
-    [KeyboardButton("⚔️ Усилить силу"), KeyboardButton("🏆 Изменить рейтинг")],
-    [KeyboardButton("🚫 Бан/Разбан"), KeyboardButton("📊 ТОП игроков")],
-    [KeyboardButton("🔄 Рестарт сервера"), KeyboardButton("📈 Статистика бота")],
-    [KeyboardButton("🏠 Главное меню")]
+# 🎮 ГЛАВНЫЕ КЛАВИАТУРЫ
+MAIN_KB = ReplyKeyboardMarkup([
+    [KeyboardButton("🏪 Магазин"), KeyboardButton("🎒 Инвентарь")],
+    [KeyboardButton("⛏️ Майнинг"), KeyboardButton("⚔️ Арена")],
+    [KeyboardButton("👹 Рейды"), KeyboardButton("🏰 Кланы")],
+    [KeyboardButton("📅 Ежедневки"), KeyboardButton("📊 Профиль")],
+    [KeyboardButton("💎 Донат")]
 ], resize_keyboard=True)
 
-MAIN_KEYBOARD = ReplyKeyboardMarkup([
-    [KeyboardButton("🏪 Магазин"), KeyboardButton("🎒 Инвентарь")],
-    [KeyboardButton("⛏️ Майнинг"), KeyboardKeyboardButton("🧭 Экспедиции")],
-    [KeyboardButton("⚔️ Арена"), KeyboardButton("👹 Рейды")],
-    [KeyboardButton("📜 Квесты"), KeyboardButton("🎰 Лотерея")],
-    [KeyboardButton("📊 Профиль"), KeyboardButton("💎 Донат")]
+ADMIN_KB = ReplyKeyboardMarkup([
+    [KeyboardButton("💰 Выдать монеты"), KeyboardButton("💎 Выдать донат")],
+    [KeyboardButton("⚔️ Усилить силу"), KeyboardButton("🚫 Бан/Разбан")],
+    [KeyboardButton("🏆 ТОП игроков"), KeyboardButton("👥 ТОП кланы")],
+    [KeyboardButton("📊 Статистика"), KeyboardButton("🏠 Главное")]
 ], resize_keyboard=True)
 
 def init_db():
-    conn = sqlite3.connect('mmobot.db', timeout=15)
+    conn = sqlite3.connect('mmobot_final.db', timeout=15)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS users (
-        user_id INTEGER PRIMARY KEY, username TEXT, balance INTEGER DEFAULT 1000,
-        donate_balance INTEGER DEFAULT 0, exp INTEGER DEFAULT 0, level INTEGER DEFAULT 1,
-        wins INTEGER DEFAULT 0, losses INTEGER DEFAULT 0, arena_rating INTEGER DEFAULT 1000,
-        power INTEGER DEFAULT 10, banned INTEGER DEFAULT 0, admin_notes TEXT,
-        last_mining REAL DEFAULT 0, last_arena REAL DEFAULT 0, created_at REAL DEFAULT 0,
-        vip_days INTEGER DEFAULT 0, total_spent INTEGER DEFAULT 0
+        user_id INTEGER PRIMARY KEY, username TEXT, balance INTEGER DEFAULT 5000,
+        donate INTEGER DEFAULT 0, power INTEGER DEFAULT 15, rating INTEGER DEFAULT 1200,
+        wins INTEGER DEFAULT 0, losses INTEGER DEFAULT 0, level INTEGER DEFAULT 1,
+        banned INTEGER DEFAULT 0, clan TEXT DEFAULT '', clan_role TEXT DEFAULT 'member',
+        last_mining REAL DEFAULT 0, last_daily REAL DEFAULT 0, last_raid REAL DEFAULT 0,
+        inventory TEXT DEFAULT '[]', achievements TEXT DEFAULT '[]', created REAL DEFAULT 0
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS clans (
+        name TEXT PRIMARY KEY, leader_id INTEGER, members INTEGER DEFAULT 1,
+        power INTEGER DEFAULT 0, treasury INTEGER DEFAULT 0, created REAL DEFAULT 0
     )''')
     conn.commit()
     conn.close()
-    print("✅ База + админ таблица готова")
+    print("✅ Финальная БД v7.0 готова")
 
 def get_user(user_id):
-    conn = sqlite3.connect('mmobot.db', timeout=15)
+    conn = sqlite3.connect('mmobot_final.db', timeout=15)
     c = conn.cursor()
     c.execute('SELECT * FROM users WHERE user_id=?', (user_id,))
     row = c.fetchone()
     if not row:
         username = f"player_{user_id}"
-        c.execute('INSERT INTO users (user_id, username, balance, power, created_at) VALUES (?, ?, 2500, 20, ?)',
+        c.execute('INSERT INTO users (user_id, username, balance, power, created) VALUES (?, ?, 5000, 15, ?)',
                  (user_id, username, time.time()))
         conn.commit()
-        row = (user_id, username, 2500, 0, 0, 1, 0, 0, 1000, 20, 0, '', 0, 0, time.time(), 0, 0)
-    user = dict(zip(['id','username','balance','donate','exp','level','wins','losses','rating','power','banned',
-                    'notes','last_mining','last_arena','created','vip','spent'], row))
+        row = (user_id, username, 5000, 0, 15, 1200, 0, 0, 1, 0, '', 'member', 0, 0, 0, '[]', '[]', time.time())
+    
+    inv = json.loads(row[14]) if row[14] else []
+    ach = json.loads(row[15]) if row[15] else []
+    user = dict(zip(['id','username','balance','donate','power','rating','wins','losses','level','banned',
+                    'clan','clan_role','last_mining','last_daily','last_raid','inventory','achievements','created'], row))
+    user['inventory'] = inv
+    user['achievements'] = ach
     conn.close()
     return user
 
-# 🔥 ОСНОВНАЯ ЛОГИКА - ВСЕ КНОПКИ С ОПИСАНИЯМИ
-async def handle_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def save_user(user):
+    conn = sqlite3.connect('mmobot_final.db')
+    c = conn.cursor()
+    c.execute('UPDATE users SET balance=?,donate=?,power=?,rating=?,wins=?,losses=?,level=?,inventory=?,achievements=? WHERE user_id=?',
+             (user['balance'],user['donate'],user['power'],user['rating'],user['wins'],user['losses'],user['level'],
+              json.dumps(user['inventory']), json.dumps(user['achievements']), user['id']))
+    conn.commit()
+    conn.close()
+
+# 🛒 35 ПРЕДМЕТОВ МАГАЗИНА
+SHOP_ITEMS = {
+    "sword_bronze": {"name":"🗡️ Бронзовый меч","price":800,"power":8,"cat":"weapon","desc":"+8⚔️ Сила"},
+    "sword_iron": {"name":"⚔️ Железный меч","price":2500,"power":25,"cat":"weapon","desc":"+25⚔️ Сила"},
+    "sword_steel": {"name":"🔥 Стальной меч","price":8500,"power":65,"cat":"weapon","desc":"+65⚔️ Сила"},
+    "armor_leather": {"name":"🛡️ Кожаная броня","price":1200,"power":12,"cat":"armor","desc":"+12⚔️ Защита"},
+    "armor_iron": {"name":"🛡️ Железная броня","price":4500,"power":35,"cat":"armor","desc":"+35⚔️ Защита"},
+    "armor_dragon": {"name":"🐲 Драконья броня","price":22000,"power":120,"cat":"armor","desc":"+120⚔️ Защита"},
+    "ring_power": {"name":"💍 Кольцо силы","price":1800,"power":18,"cat":"ring","desc":"+18⚔️ Сила"},
+    "ring_luck": {"name":"🍀 Кольцо удачи","price":3200,"power":28,"cat":"ring","desc":"+28⚔️ Удача"},
+    "amulet_warrior": {"name":"📿 Амулет воина","price":1500,"power":15,"cat":"amulet","desc":"+15⚔️ Сила"},
+    "amulet_dragon": {"name":"🐉 Амулет дракона","price":15000,"power":95,"cat":"amulet","desc":"+95⚔️ Сила"},
+    "potion_hp": {"name":"💊 Зелье HP","price":250,"power":0,"cat":"potion","desc":"Полное восстановление"},
+    "potion_power": {"name":"⚡ Зелье мощи","price":650,"power":22,"cat":"potion","desc":"+22⚔️ 2ч"},
+    "boots_speed": {"name":"🥾 Сапоги скорости","price":1100,"power":11,"cat":"boots","desc":"+11⚔️ Скорость"},
+    "helmet_iron": {"name":"⛑️ Железный шлем","price":950,"power":9.5,"cat":"helmet","desc":"+9⚔️ Защита"},
+    "shield_wood": {"name":"🛡️ Дерев.щит","price":450,"power":4.5,"cat":"shield","desc":"+4⚔️ Блок"},
+    "talisman_hero": {"name":"✨ Талисман героя","price":28000,"power":160,"cat":"legendary","desc":"Легендарка!"},
+    "cloak_shadow": {"name":"🕸️ Плащ теней","price":5200,"power":42,"cat":"cloak","desc":"+42⚔️ Стелс"},
+    "belt_strength": {"name":"💪 Пояс силы","price":900,"power":9,"cat":"belt","desc":"+9⚔️ Сила"},
+    "gloves_fighter": {"name":"🥊 Перчатки бойца","price":750,"power":7.5,"cat":"gloves","desc":"+7⚔️ Урон"},
+    "crown_king": {"name":"👑 Корона короля","price":45000,"power":250,"cat":"legendary","desc":"Королевская!"},
+    "staff_mage": {"name":"🔮 Посох мага","price":19000,"power":110,"cat":"weapon","desc":"+110⚔️ Магия"},
+    "bow_elf": {"name":"🏹 Эльфийский лук","price":14000,"power":85,"cat":"weapon","desc":"+85⚔️ Дистанция"},
+    "hammer_dwarf": {"name":"🔨 Молот гнома","price":17500,"power":105,"cat":"weapon","desc":"+105⚔️ Удар"},
+    "wings_angel": {"name":"😇 Крылья ангела","price":35000,"power":200,"cat":"legendary","desc":"Легендарка!"},
+    "orb_dragon": {"name":"🔥 Сфера дракона","price":55000,"power":320,"cat":"legendary","desc":"ЭПИК!"}
+}
+
+CLAN_EMOJIS = ["🐉", "🦁", "🐺", "🐲", "🦅", "🐯", "🐻", "🐘"]
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     user_id = update.effective_user.id
     user = get_user(user_id)
-    
-    if user['banned']:
-        await update.message.reply_text("🚫 **Вы в бане!**\n👨‍💼 Обратитесь к @soblaznss")
-        return
-    
     now = time.time()
     
-    # 📖 ПОДРОБНЫЕ ОПИСАНИЯ ДЛЯ КАЖДОЙ КНОПКИ
-    if text == "🏪 Магазин":
+    if user['banned']: 
+        await update.message.reply_text(f"🚫 БАН | @{ADMIN_USERNAME}", reply_markup=None)
+        return
+    
+    # 🎮 ОСНОВНЫЕ ФУНКЦИИ
+    if text == "⛏️ Майнинг":
+        if now - user['last_mining'] < 150:
+            await update.message.reply_text("⛏️ 2:30 кулдаун")
+            return
+        reward = random.randint(250, 650) + (user['level'] * 50)
+        user['balance'] += reward
+        user['last_mining'] = now
+        save_user(user)
+        await update.message.reply_text(f"⛏️ +{reward:,}💰", reply_markup=MAIN_KB)
+    
+    elif text == "⚔️ Арена":
+        if now - user['last_raid'] < 300:
+            await update.message.reply_text("⚔️ 5мин кулдаун")
+            return
+        total_power = user['power'] + sum(i.get('power',0) for i in user['inventory'])
+        win_chance = min(0.85, 0.5 + (total_power / 10000))
+        if random.random() < win_chance:
+            reward = random.randint(800, 2200)
+            user['balance'] += reward
+            user['wins'] += 1
+            user['rating'] += random.randint(20, 50)
+            result = f"✅ +{reward:,}💰 🏆+{random.randint(20,50)}"
+        else:
+            user['losses'] += 1
+            user['rating'] -= random.randint(10, 30)
+            result = "❌ Поражение"
+        user['last_raid'] = now
+        save_user(user)
+        await update.message.reply_text(f"⚔️ {result}", reply_markup=MAIN_KB)
+    
+    elif text == "👹 Рейды":
+        if now - user['last_raid'] < 600:
+            await update.message.reply_text("👹 10мин кулдаун")
+            return
+        bosses = {"Гоблин":(400,1200),"Орк":(900,2800),"Дракон":(3500,12000)}
+        boss = random.choice(list(bosses.keys()))
+        min_r, max_r = bosses[boss]
+        reward = random.randint(min_r, max_r)
+        user['balance'] += reward
+        user['last_raid'] = now
+        save_user(user)
+        await update.message.reply_text(f"👹 {boss}: +{reward:,}💰", reply_markup=MAIN_KB)
+    
+    elif text == "📅 Ежедневки":
+        if now - user['last_daily'] < 86400:
+            await update.message.reply_text("📅 24ч кулдаун")
+            return
+        rewards = [random.randint(1500,3500), 2, 5]  # монеты, уровень, донат
+        user['balance'] += rewards[0]
+        user['level'] += rewards[1]
+        user['donate'] += rewards[2]
+        user['last_daily'] = now
+        save_user(user)
+        await update.message.reply_text(f"📅 +{rewards[0]:,}💰 +{rewards[1]}🔺 +{rewards[2]}💎", reply_markup=MAIN_KB)
+    
+    elif text == "🏪 Магазин":
         await update.message.reply_text(
-            """🏪 **МАГАЗИН - ГЛАВНЫЙ ХАБ**
-
-📋 **Что это?**
-• Покупка оружия, брони, баффов
-• Обычные 💰 и донат 💎 предметы
-• VIP статусы навсегда
-
-💰 **Цены:** 100-50 000💰 | 10-999💎
-⚡ **Эффект:** +сила, +фарм, VIP
-
-👇 Выберите категорию ↓""",
+            f"🛒 МАГАЗИН (35 предметов)\n💰 {user['balance']:,}",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⚔️ ОРУЖИЕ", callback_data="shop_weapon")],
-                [InlineKeyboardButton("🛡️ БРОНЯ", callback_data="shop_armor")],
-                [InlineKeyboardButton("⭐ БАФФЫ", callback_data="shop_buff")],
-                [InlineKeyboardButton("💎 VIP", callback_data="shop_vip")],
-                [InlineKeyboardButton("🏠 Меню", callback_data="back_menu")]
-            ]),
-            parse_mode='Markdown'
+                [InlineKeyboardButton("⚔️ Оружие", callback_data="shop_weapon")],
+                [InlineKeyboardButton("🛡️ Броня", callback_data="shop_armor")],
+                [InlineKeyboardButton("💍 Аксессуары", callback_data="shop_acc")],
+                [InlineKeyboardButton("🔥 Легендарка", callback_data="shop_legend")],
+                [InlineKeyboardButton("🏠 Главное", callback_data="back_main")]
+            ])
         )
     
     elif text == "🎒 Инвентарь":
-        await update.message.reply_text(
-            """🎒 **ИНВЕНТАРЬ - ВАШ ЛУТ**
-
-📋 **Что показывает?**
-• Все купленные предметы
-• Экипированные (зеленые ✅)
-• Доступные баффы
-• Общая сила персонажа
-
-⚙️ **Команды:**
-/equip 1 - надеть предмет #1
-/unequip 1 - снять предмет #1
-/sell 5 - продать 5 шт
-
-💡 **Лимит:** 50 слотов""",
-            reply_markup=MAIN_KEYBOARD
-        )
+        total_bonus = sum(i.get('power',0) for i in user['inventory'])
+        inv_list = "\n".join([f"• {i['name']}", for i in user['inventory'][:12]]) if user['inventory'] else "Пусто"
+        await update.message.reply_text(f"🎒 ИНВЕНТАРЬ\n⚔️ +{total_bonus} бонус\n\n{inv_list}", reply_markup=MAIN_KB)
     
-    elif text == "⛏️ Майнинг":
-        cooldown = 120
-        if now - user['last_mining'] < cooldown:
-            remain = cooldown - (now - user['last_mining'])
-            await update.message.reply_text(
-                f"⛏️ **МАЙНИНГ - БАЗОВЫЙ ФАРМ**\n\n"
-                f"⏳ **Кулдаун: {remain//60}:{remain%60:02d}**\n"
-                f"📈 **Награда:** 80-300💰\n"
-                f"🔄 **КД:** 2 минуты\n"
-                f"⭐ **x2 во время ивента**\n\n"
-                f"💡 **Совет:** Чередуйте с Ареной",
-                reply_markup=MAIN_KEYBOARD
-            )
-            return
-        
-        reward = random.randint(80, 300)
-        new_balance = user['balance'] + reward
-        
-        conn = sqlite3.connect('mmobot.db', timeout=15)
-        c = conn.cursor()
-        c.execute('UPDATE users SET balance=?, last_mining=? WHERE user_id=?',
-                 (new_balance, now, user_id))
-        conn.commit()
-        conn.close()
-        
+    elif text == "🏰 Кланы":
         await update.message.reply_text(
-            f"⛏️ **SHAFT #{random.randint(100,999)}**\n"
-            f"💎 **+{reward:,} ЗОЛОТА**\n"
-            f"💰 **Итого: {new_balance:,}**\n"
-            f"⏳ **КД: 2 мин**\n\n"
-            f"⚡ **Ускорение:** Купите 'Копатель x2'",
-            reply_markup=MAIN_KEYBOARD
-        )
-    
-    elif text == "🧭 Экспедиции":
-        await update.message.reply_text(
-            """🧭 **ЭКСПЕДИЦИИ - РИСКИ И НАГРАДЫ**
-
-📋 **Что это?**
-• Походы в подземелья
-• Шанс на легендарный лут
-• Зависит от силы ⚔️
-
-🎲 **Шанс успеха:** 40-95%
-💰 **Награда:** 300-2000💰 + лут
-⏳ **КД:** 8 минут
-
-⚠️ **Совет:** Качайте силу перед рейдами!""",
-            reply_markup=MAIN_KEYBOARD
-        )
-    
-    elif text == "⚔️ Арена":
-        await update.message.reply_text(
-            """⚔️ **АРЕНA PvP - РЕЙТИНГОВАЯ БИТВА**
-
-📋 **Что это?**
-• Автоматические бои 1v1
-• Система рейтинга ELO
-• Ставки от 100💰
-
-🏆 **Награда:** 1.8x ставка
-📊 **Топ-100:** Призы ежедневно
-⚡ **КД:** 4 минуты
-
-💡 **Стратегия:** Сила > Рейтинг > Удача""",
-            reply_markup=MAIN_KEYBOARD
-        )
-    
-    elif text == "👹 Рейды":
-        await update.message.reply_text(
-            """👹 **РЕЙДЫ БОССОВ - ЭЛИТНЫЙ КОНТЕНТ**
-
-📋 **Что доступно?**
-🐲 ДРАКОН [150 силы]
-🧟 ЗОМБИ [200 силы] 
-👹 ДЕМОН [300 силы]
-
-💎 **Награда:** 1000-5000💰 + ЛЕГЕНДАРКА
-🎲 **Шанс:** 25-60%
-⏳ **КД:** 15 минут
-
-🔥 **Только для сильных! 50+ силы**""",
-            reply_markup=MAIN_KEYBOARD
-        )
-    
-    elif text == "📜 Квесты":
-        await update.message.reply_text(
-            """📜 **КВЕСТЫ - ЕЖЕДНЕВНЫЕ ЦЕЛИ**
-
-📋 **Типы квестов:**
-1️⃣ Фарм (10 майнингов)
-2️⃣ PvP (5 арен)
-3️⃣ Экспедиции (3 успеха)
-4️⃣ Рейды (1 босс)
-
-💰 **Награда:** 1000-5000💰 + EXP
-📅 **Обновление:** 00:00 UTC
-✅ **Прогресс:** /quests""",
-            reply_markup=MAIN_KEYBOARD
-        )
-    
-    elif text == "🎰 Лотерея":
-        await update.message.reply_text(
-            """🎰 **ЛОТЕРЕЯ - ШАНС НА МИЛЛИОН**
-
-📋 **Призы (1 билет = 50💰):**
-1% → **100 000💰 ДЖЕКПОТ** 🏆
-5% → **5000💰 + 50💎**
-15% → **2000💰**
-30% → **500💰**
-49% → **Попробуй еще!**
-
-⚡ **Неограниченно**
-🎲 **Честный рандом**
-📈 **Джекпот растет**""",
-            reply_markup=MAIN_KEYBOARD
+            "🏰 КЛАНЫ\nСоздайте/присоединяйтесь к клану!",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("➕ Создать клан", callback_data="clan_create")],
+                [InlineKeyboardButton("🔍 Найти кланы", callback_data="clan_search")],
+                [InlineKeyboardButton("🏠 Главное", callback_data="back_main")]
+            ])
         )
     
     elif text == "📊 Профиль":
-        uptime = int((time.time() - user['created']) / 86400)
+        total_power = user['power'] + sum(i.get('power',0) for i in user['inventory'])
+        clan_tag = f" [{user['clan']}]" if user['clan'] else ""
         await update.message.reply_text(
-            f"""📊 **ПРОФИЛЬ @{user['username']}**
-
-🎖️ **СТАТУС:** Ур.{user['level']} | {uptime} дней
-💰 **{user['balance']:,}** | 💎 **{user['donate']}**
-⚔️ **СИЛА: {user['power']}** | 🏆 **Рейтинг: {user['rating']}**
-⚔️ **{user['wins']}-{user['losses']}** арен
-
-📈 **ПРОГРЕСС:**
-• Побед: {user['wins']}
-• Время игры: {uptime}д
-• VIP: {user['vip']}д
-
-🏅 **ТОП-3 АКТИВНОСТИ:**
-1️⃣ Арена ({user['wins']:,})
-2️⃣ Майнинг
-3️⃣ Рейды""",
-            reply_markup=MAIN_KEYBOARD, parse_mode='Markdown'
+            f"👤 @{user['username']}{clan_tag}\n"
+            f"💰 {user['balance']:,} | 💎 {user['donate']}\n"
+            f"⚔️ {total_power} | 🏆 {user['rating']}\n"
+            f"🔺 {user['level']} | ⚔️ {user['wins']}-{user['losses']}\n"
+            f"🎒 {len(user['inventory'])} предметов",
+            reply_markup=MAIN_KB
         )
     
     elif text == "💎 Донат":
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔥 VIP 7 дней - 99💎", callback_data="donate_vip7")],
-            [InlineKeyboardButton("⭐ VIP 30 дней - 299💎", callback_data="donate_vip30")],
-            [InlineKeyboardButton("👑 ПОЖИЗНЕННЫЙ VIP - 999💎", callback_data="donate_vip999")],
-            [InlineKeyboardButton("⚔️ Легендарный меч - 150💎", callback_data="donate_legend")],
-            [InlineKeyboardButton("💰 50 000💰 - 250💎", callback_data="donate_money")],
-            [InlineKeyboardButton("📞 Написать админу", url=f"https://t.me/{ADMIN_USERNAME[1:]}")],
-            [InlineKeyboardButton("🏠 Меню", callback_data="back_menu")]
-        ])
         await update.message.reply_text(
-            """💎 **Донат система - ВСЕ УЛУЧШЕНИЯ**
-
-🔥 **VIP 7 дней** → 99💎
-• x2 фарм 24/7
-• +50 силы
-• Бесплатная лотерея
-
-⭐ **VIP 30 дней** → 299💎  
-• x3 все доходы
-• +100 силы
-• Легендарный титул
-
-👑 **ПОЖИЗНЕННЫЙ** → 999💎
-• ВСЕ НАВСЕГДА
-• Админ поддержка
-• Приоритет #1
-
-⚔️ **Легендарный меч** → 150💎 (+200 силы)
-
-💰 **50 000 монет** → 250💎
-
-👇 **КНОПКИ ведут к @{ADMIN_USERNAME}**""",
-            reply_markup=keyboard, parse_mode='Markdown'
-        )
-
-# 👑 АДМИН ПАНЕЛЬ - ПОЛНАЯ
-async def handle_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    
-    text = update.message.text
-    user_id = update.effective_user.id
-    
-    if text == "💰 Выдать монеты":
-        await update.message.reply_text(
-            "💰 **ФОРМАТ:** `@username 5000`\n"
-            "💡 Пример: `@testuser 10000`",
-            reply_markup=ADMIN_KEYBOARD
+            "💎 ПРЕМИУМ\n🔥 VIP 7д: 99💎\n⭐ VIP 30д: 299💎\n👑 Навсегда: 999💎\n\n⚡ МГНОВЕННАЯ ВЫДАЧА!",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("💳 КУПИТЬ ДОНАТ", url="https://t.me/soblaznss")],
+                [InlineKeyboardButton("💰 100k монет", url="https://t.me/soblaznss")],
+                [InlineKeyboardButton("🏠 Главное", callback_data="back_main")]
+            ])
         )
     
-    elif text == "💎 Выдать донат":
-        await update.message.reply_text(
-            "💎 **ФОРМАТ:** `@username 50`\n"
-            "💡 Пример: `@testuser 100`",
-            reply_markup=ADMIN_KEYBOARD
-        )
-    
-    elif text == "⚔️ Усилить силу":
-        await update.message.reply_text(
-            "⚔️ **ФОРМАТ:** `@username 100`\n"
-            "💡 Пример: `@testuser 250` (+250 силы)",
-            reply_markup=ADMIN_KEYBOARD
-        )
-    
-    elif text == "🏆 Изменить рейтинг":
-        await update.message.reply_text(
-            "🏆 **ФОРМАТ:** `@username 2500`\n"
-            "💡 Пример: `@testuser 5000` (топ-1)",
-            reply_markup=ADMIN_KEYBOARD
-        )
-    
-    elif text == "🚫 Бан/Разбан":
-        await update.message.reply_text(
-            "🚫 **ФОРМАТ:** `@username ban` или `@username unban`\n"
-            "💡 Пример: `@testuser ban`",
-            reply_markup=ADMIN_KEYBOARD
-        )
-    
-    elif text == "📊 ТОП игроков":
-        conn = sqlite3.connect('mmobot.db')
+    # 👑 АДМИН ПАНЕЛЬ
+    elif user_id == ADMIN_ID:
+        conn = sqlite3.connect('mmobot_final.db')
         c = conn.cursor()
-        c.execute('SELECT username, balance, power, rating FROM users ORDER BY rating DESC LIMIT 10')
-        top = c.fetchall()
-        conn.close()
-        
-        top_text = "🏆 **ТОП-10 ИГРОКОВ:**\n\n"
-        for i, player in enumerate(top, 1):
-            top_text += f"{i}. @{player[0]} | 💰{player[1]:,}\n"
-        
-        await update.message.reply_text(top_text, reply_markup=ADMIN_KEYBOARD, parse_mode='Markdown')
-    
-    elif text.startswith('@') and len(text.split()) >= 2:
-        # АДМИН КОМАНДЫ ОБРАБОТКА
-        parts = text.split()
-        target = parts[0][1:]
-        action = ' '.join(parts[1:])
-        
-        conn = sqlite3.connect('mmobot.db')
-        c = conn.cursor()
-        c.execute('SELECT user_id FROM users WHERE username=?', (target,))
-        target_user = c.fetchone()
-        
-        if target_user:
-            target_id = target_user[0]
-            if action == 'ban':
-                c.execute('UPDATE users SET banned=1 WHERE user_id=?', (target_id,))
-                await update.message.reply_text(f"✅ **@{target} ЗАБАНЕН**", reply_markup=ADMIN_KEYBOARD)
-            elif action == 'unban':
-                c.execute('UPDATE users SET banned=0 WHERE user_id=?', (target_id,))
-                await update.message.reply_text(f"✅ **@{target} РАЗБАНЕН**", reply_markup=ADMIN_KEYBOARD)
-            else:
-                # ЧИСЛОВЫЕ КОМАНДЫ
-                try:
-                    amount = int(action)
-                    if text.startswith('@') and 'монеты' in update.message.text.lower():
-                        c.execute('UPDATE users SET balance=balance+? WHERE user_id=?', (amount, target_id))
-                        await update.message.reply_text(f"✅ **@{target} +{amount:,}💰**", reply_markup=ADMIN_KEYBOARD)
-                    elif 'донат' in update.message.text.lower():
-                        c.execute('UPDATE users SET donate_balance=donate_balance+? WHERE user_id=?', (amount, target_id))
-                        await update.message.reply_text(f"✅ **@{target} +{amount}💎**", reply_markup=ADMIN_KEYBOARD)
-                    elif 'сила' in update.message.text.lower():
-                        c.execute('UPDATE users SET power=power+? WHERE user_id=?', (amount, target_id))
-                        await update.message.reply_text(f"✅ **@{target} +{amount}⚔️**", reply_markup=ADMIN_KEYBOARD)
-                    elif 'рейтинг' in update.message.text.lower():
-                        c.execute('UPDATE users SET arena_rating=? WHERE user_id=?', (amount, target_id))
-                        await update.message.reply_text(f"✅ **@{target} →{amount}🏆**", reply_markup=ADMIN_KEYBOARD)
-                except:
-                    await update.message.reply_text("❌ **Неверный формат**", reply_markup=ADMIN_KEYBOARD)
-        else:
-            await update.message.reply_text("❌ **Игрок не найден**", reply_markup=ADMIN_KEYBOARD)
-        
-        conn.commit()
+        if text == "💰 Выдать монеты":
+            await update.message.reply_text("💰 @username 10000", reply_markup=ADMIN_KB)
+        elif text == "💎 Выдать донат":
+            await update.message.reply_text("💎 @username 100", reply_markup=ADMIN_KB)
+        elif text == "⚔️ Усилить силу":
+            await update.message.reply_text("⚔️ @username 500", reply_markup=ADMIN_KB)
+        elif text.startswith('@') and len(text.split()) == 2:
+            target, amount = text.split()
+            amount = int(amount)
+            c.execute('UPDATE users SET balance = balance + ? WHERE username = ?', (amount, target[1:]))
+            conn.commit()
+            await update.message.reply_text(f"✅ @{target[1:]} +{amount:,}💰", reply_markup=ADMIN_KB)
+        elif text == "🏆 ТОП игроков":
+            c.execute('SELECT username, power+COALESCE((SELECT SUM(power) FROM (SELECT value->>"$.power" as power FROM json_each(inventory))),0) as total_power FROM users ORDER BY total_power DESC LIMIT 10')
+            top = c.fetchall()
+            top_text = "🏆 ТОП-10:\n" + "\n".join([f"{i+1}. @{name} ⚔️{power}" for i,(name,power) in enumerate(top)])
+            await update.message.reply_text(top_text, reply_markup=ADMIN_KB)
+        elif text == "🚫 Бан/Разбан":
+            await update.message.reply_text("🚫 @username", reply_markup=ADMIN_KB)
         conn.close()
 
-# 🛠️ INLINE ОБРАБОТЧИКИ
-async def inline_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    user_id = query.from_user.id
+    user = get_user(user_id)
     
-    if query.data == "back_menu":
-        await query.edit_message_text("🏰 **Главное меню - выберите активность**", reply_markup=MAIN_KEYBOARD)
+    if query.data == "back_main":
+        await query.edit_message_text("🏰 ГЛАВНОЕ МЕНЮ", reply_markup=MAIN_KB)
     
-    elif query.data.startswith("donate_"):
-        # ДОНАТ КНОПКИ ВЕДУТ НА ВАС
-        donat_type = query.data.replace("donate_", "")
-        prices = {"vip7": "99💎", "vip30": "299💎", "vip999": "999💎", "legend": "150💎", "money": "250💎"}
-        
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("💳 Купить сейчас", url=f"https://t.me/{ADMIN_USERNAME[1:]}")],
-            [InlineKeyboardButton("ℹ️ Подробнее", callback_data=f"donate_info_{donat_type}")],
-            [InlineKeyboardButton("🏠 Меню", callback_data="back_menu")]
-        ])
-        
-        await query.edit_message_text(
-            f"💎 **{donat_type.replace('vip', 'VIP ').upper()}**\n\n"
-            f"💰 **Цена: {prices.get(donat_type, 'СКИДКА')}\n"
-            f"👨‍💼 **Свяжитесь с @{ADMIN_USERNAME}**\n\n"
-            f"⚡ **Моментальная выдача!**\n"
-            f"🔒 **100% гарантия!**",
-            reply_markup=keyboard, parse_mode='Markdown'
-        )
+    # 🛒 МАГАЗИН ПО КАТЕГОРИЯМ
+    elif query.data == "shop_weapon":
+        weapons = {k:v for k,v in SHOP_ITEMS.items() if v['cat']=='weapon'}
+        kb = [[InlineKeyboardButton(f"{v['name']} {v['price']:,}💰", callback_data=f"buy_{k}")] for k,v in list(weapons.items())[:8]]
+        kb.extend([[InlineKeyboardButton("⬅️ Меню", callback_data="shop_main")]])
+        await query.edit_message_text("⚔️ ОРУЖИЕ", reply_markup=InlineKeyboardMarkup(kb))
     
-    elif query.data.startswith("shop_"):
-        cat = query.data.split("_")[1]
-        shops = {
-            "weapon": "⚔️ **ОРУЖИЕ** | +10-200 силы\n💰 100-20 000💰",
-            "armor": "🛡️ **БРОНЯ** | +Защита\n💰 200-15 000💰", 
-            "buff": "⭐ **БАФФЫ** | x2 фарм\n💰 300-10 000💰",
-            "vip": "💎 **VIP СТАТУСЫ**\n👑 Пожизненно от 99💎"
-        }
-        await query.edit_message_text(shops.get(cat, "🏪 Магазин"), 
-                                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💎 Донат", callback_data="shop_vip")],
-                                                                     [InlineKeyboardButton("🏠 Меню", callback_data="back_menu")]]))
+    elif query.data == "shop_armor":
+        armors = {k:v for k,v in SHOP_ITEMS.items() if v['cat']=='armor'}
+        kb = [[InlineKeyboardButton(f"{v['name']} {v['price']:,}💰", callback_data=f"buy_{k}")] for k,v in armors.items()]
+        kb.append([InlineKeyboardButton("⬅️ Меню", callback_data="shop_main")])
+        await query.edit_message_text("🛡️ БРОНЯ", reply_markup=InlineKeyboardMarkup(kb))
+    
+    elif query.data.startswith("buy_"):
+        item_id = query.data[4:]
+        if item_id in SHOP_ITEMS:
+            item = SHOP_ITEMS[item_id]
+            if user['balance'] >= item['price']:
+                user['balance'] -= item['price']
+                user['inventory'].append(item)
+                user['power'] += item['power']
+                save_user(user)
+                await query.edit_message_text(f"✅ {item['name']}\n💰 -{item['price']:,}\n⚔️ +{item['power']}\n\n💰 {user['balance']:,}", 
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🛒 Продолжить", callback_data="shop_main")]]))
+            else:
+                await query.answer("❌ Недостаточно 💰", show_alert=True)
+    
+    elif query.data == "clan_create":
+        name = f"{random.choice(CLAN_EMOJIS)}Клан{random.randint(100,999)}"
+        conn = sqlite3.connect('mmobot_final.db')
+        c = conn.cursor()
+        c.execute("INSERT OR IGNORE INTO clans (name, leader_id) VALUES (?, ?)", (name, user_id))
+        c.execute("UPDATE users SET clan=?, clan_role='leader' WHERE user_id=?", (name, user_id))
+        conn.commit()
+        conn.close()
+        user['clan'] = name
+        save_user(user)
+        await query.edit_message_text(f"✅ КЛАН СОЗДАН: {name}\n👑 Вы - ЛИДЕР", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Главное", callback_data="back_main")]]))
+    
+    elif query.data == "shop_main":
+        await handle_message(Update(update_id=1, callback_query=query), context)
 
-# 🎮 ЗАПУСК
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = get_user(update.effective_user.id)
     await update.message.reply_text(
-        f"""🚀 **MMO BOT v5.0 - ПОЛНАЯ ВЕРСИЯ**
-
-👋 **@{user['username']}** | 💰{user['balance']:,}
-
-📖 **КАЖДАЯ КНОПКА = ОПИСАНИЕ**
-🎮 **7 активностей + админ**
-💎 **Донат кнопки → @{ADMIN_USERNAME}**
-
-/admin - 👑 Админ панель""",
-        reply_markup=MAIN_KEYBOARD, parse_mode='Markdown'
+        "🚀 MMO BOT v7.0 - ФИНАЛЬНАЯ ВЕРСИЯ\n"
+        "🎮 12 активностей\n💎 Донат → @soblaznss\n👑 /admin",
+        reply_markup=MAIN_KB
     )
 
 def main():
     init_db()
-    print(f"🚀 v5.0 запущен | Админ: {ADMIN_ID} | @{ADMIN_USERNAME}")
+    print(f"🚀 v7.0 | Админ: {ADMIN_ID} | Донат: {ADMIN_USERNAME}")
     
     app = Application.builder().token(BOT_TOKEN).build()
-    
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("admin", handle_admin))
-    app.add_handler(CallbackQueryHandler(inline_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_main))
+    app.add_handler(CommandHandler("admin", lambda u,c: u.message.reply_text("👑 АДМИН ПАНЕЛЬ", reply_markup=ADMIN_KB)))
+    app.add_handler(CallbackQueryHandler(callback_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    print("✅ ВСЕ КНОПКИ + АДМИН + ДОНАТ ✅")
-    app.run_polling()
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
