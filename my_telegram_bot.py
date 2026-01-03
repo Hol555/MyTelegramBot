@@ -1,90 +1,161 @@
+#!/usr/bin/env python3
 import os
-
-import requests
-from telegram.ext import Updater
-from telegram.ext import CommandHandler
-from telegram.ext import MessageHandler
-from telegram.ext import filters
-
+import logging
+import aiosqlite
+import random
+import asyncio
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# Загружаем переменные окружения
 load_dotenv()
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-# CHAT_ID = os.getenv('TELEGRAM_ID')
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",")]
 
+# ----------------- База данных -----------------
+class GameDatabase:
+    def __init__(self, db_path="bot.db"):
+        self.db_path = db_path
 
-def start(update, context):
-    user_name = update.effective_user['first_name']
-    update.message.reply_text(f'Привет, {user_name}, я бот. Напиши мне и я '
-                              f'постараюсь тебе помочь. Чтобы узнать, '
-                              f'что я умею набери /help.')
+    async def init_db(self):
+        async with aiosqlite.connect(self.db_path) as db:
+            # Пользователи
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id INTEGER PRIMARY KEY,
+                    username TEXT,
+                    first_name TEXT,
+                    vip_until DATETIME,
+                    total_score INTEGER DEFAULT 0,
+                    games_played INTEGER DEFAULT 0,
+                    best_score INTEGER DEFAULT 0,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            # Игры
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS games (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    score INTEGER NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id)
+                )
+            """)
+            await db.commit()
+            logger.info("✅ Database initialized")
 
+    async def add_user(self, user_id, username, first_name):
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                INSERT OR IGNORE INTO users (user_id, username, first_name)
+                VALUES (?, ?, ?)
+            """, (user_id, username, first_name))
+            await db.commit()
 
-def help(update, context):
-    update.message.reply_text('Вот что я умею!\n'
-                              'Чтобы узнать погоду, набери /weather и добавь '
-                              'город. Например /weather Тюмень.\n'
-                              'Чтобы узнать текущий курс валют, набери /currency.')
+    async def add_score(self, user_id, score):
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("INSERT INTO games (user_id, score) VALUES (?, ?)", (user_id, score))
+            await db.execute("""
+                UPDATE users
+                SET total_score = total_score + ?,
+                    games_played = games_played + 1,
+                    best_score = MAX(best_score, ?)
+                WHERE user_id = ?
+            """, (score, score, user_id))
+            await db.commit()
 
+    async def get_user_stats(self, user_id):
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("""
+                SELECT total_score, games_played, best_score, vip_until
+                FROM users WHERE user_id = ?
+            """, (user_id,)) as cursor:
+                return await cursor.fetchone() or (0, 0, 0, None)
 
-def weather(update, context):
-    if context.args:
-        city_request = ' '.join(context.args).capitalize()
-    else:
-        city_request = 'Tyumen'
-    url = 'http://wttr.in/{}?format=j1&lang=ru'
-    response = requests.get(url.format(city_request)).json()
+    async def get_leaderboard(self, limit=10):
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("""
+                SELECT first_name, total_score, games_played, best_score
+                FROM users ORDER BY total_score DESC LIMIT ?
+            """, (limit,)) as cursor:
+                return await cursor.fetchall()
 
-    # city_response = response['nearest_area'][0]['region'][0]['value']
-    weather_today = response['current_condition'][0]['lang_ru'][0]['value'].lower()
-    temperature_feels = response['current_condition'][0]['FeelsLikeC']
-    humidity_today = response['current_condition'][0]['humidity']
-    wind_today = response['current_condition'][0]['windspeedKmph']
+    async def give_vip(self, user_id, days=0):
+        async with aiosqlite.connect(self.db_path) as db:
+            if days == 0:
+                vip_until = None
+            else:
+                vip_until = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+            await db.execute("UPDATE users SET vip_until=? WHERE user_id=?", (vip_until, user_id))
+            await db.commit()
 
-    result = f'Сейчас в {city_request} {weather_today}.\n' \
-             f'Температура по ощущениям: {temperature_feels}℃.\n' \
-             f'Влажность: {humidity_today}%.\n' \
-             f'Скорость ветра: {wind_today} км/ч.'
+db = GameDatabase()
 
-    update.message.reply_text(result)
+# ----------------- Хендлеры -----------------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    await db.add_user(user.id, user.username, user.first_name)
+    keyboard = [
+        [InlineKeyboardButton("🎮 Добыча", callback_data="mine")],
+        [InlineKeyboardButton("📊 Профиль", callback_data="profile")],
+        [InlineKeyboardButton("🏆 Топ-10", callback_data="leaderboard")],
+    ]
+    await update.message.reply_text(
+        f"🎉 Привет, {user.first_name}! Выберите действие:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
 
-def currency(update, context):
-    url = 'https://www.cbr-xml-daily.ru/daily_json.js'
-    response = requests.get(url).json()
-    usd_currency = response['Valute']['USD']['Value']
-    eur_currency = response['Valute']['EUR']['Value']
-    currency_date = response['Date'].split('T')[0]
-    result = f'Курс валют на {currency_date}.\n' \
-             f'1 USD={usd_currency:.2f} руб.\n' \
-             f'1 EUR={eur_currency:.2f} руб.'
+    if data == "mine":
+        await mine_game(query)
+    elif data == "profile":
+        await show_profile(query)
+    elif data == "leaderboard":
+        await show_leaderboard(query)
 
-    update.message.reply_text(result)
+# ----------------- Игровой функционал -----------------
+async def mine_game(query):
+    await query.edit_message_text("⛏️ Началась добыча! Подождите 5 секунд...")
+    await asyncio.sleep(5)
+    score = random.randint(5, 30)
+    await db.add_score(query.from_user.id, score)
+    await query.edit_message_text(f"✅ Добыча завершена! Вы получили {score} монет.")
 
+async def show_profile(query):
+    total, games, best, vip_until = await db.get_user_stats(query.from_user.id)
+    vip_text = f"VIP до {vip_until}" if vip_until else "Нет VIP"
+    await query.edit_message_text(
+        f"📊 Профиль {query.from_user.first_name}\n"
+        f"💰 Всего очков: {total}\n"
+        f"⚡ Игр: {games}\n"
+        f"🎯 Рекорд: {best}\n"
+        f"👑 {vip_text}"
+    )
 
-def unknown(update, context):
-    update.message.reply_text('Моя твоя не понимать, набери /help, чтобы понимать.')
+async def show_leaderboard(query):
+    top = await db.get_leaderboard()
+    text = "🏆 ТОП-10 игроков:\n"
+    for i, (name, score, games, best) in enumerate(top, 1):
+        text += f"{i}. {name} — {score} очков | {games} игр | Рекорд: {best}\n"
+    await query.edit_message_text(text)
 
+# ----------------- Основной запуск -----------------
+async def main():
+    await db.init_db()
+    app = Application.builder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(button_callback))
+    await app.run_polling()
 
-def echo(update, context):
-    user_message = update.message.text
-    update.message.reply_text(f'Сам такой: {user_message}')
-
-
-def main():
-    updater = Updater(token=TELEGRAM_TOKEN, use_context=True)
-    dispather = updater.dispatcher
-
-    dispather.add_handler(CommandHandler('start', start))
-    dispather.add_handler(CommandHandler('help', help))
-    dispather.add_handler(CommandHandler('weather', weather))
-    dispather.add_handler(CommandHandler('currency', currency))
-    dispather.add_handler(MessageHandler(Filters.text & (~Filters.command), echo))
-    dispather.add_handler(MessageHandler(Filters.command, unknown))
-
-    updater.start_polling(poll_interval=5)
-    updater.idle()
-
-
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    asyncio.run(main())
