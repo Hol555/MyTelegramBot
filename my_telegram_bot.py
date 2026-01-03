@@ -1,290 +1,412 @@
+# ==============================
+# bot.py — MMO Telegram Bot
+# ==============================
+
+import asyncio
 import os
 import random
 import time
-import logging
+from datetime import datetime, timedelta
+
+from dotenv import load_dotenv
 import aiosqlite
+
 from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup,
-    ReplyKeyboardMarkup, KeyboardButton
+    Update,
+    ReplyKeyboardMarkup,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton
 )
 from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler,
-    MessageHandler, ContextTypes, filters
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    filters
 )
-from dotenv import load_dotenv
 
-# ================== CONFIG ==================
+# ==============================
+# ENV
+# ==============================
+
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
-DONATE_ADMIN = "soblaznss"
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+DB_PATH = "game.db"
 
-logging.basicConfig(level=logging.INFO)
+# ==============================
+# USER STATES
+# ==============================
 
-# ================== STATES ==================
-user_states = {}
+user_states: dict[int, dict] = {}
 
-def set_state(uid, mode, data=None):
-    user_states[uid] = {"mode": mode, "data": data or {}}
+def set_state(user_id: int, mode: str, data: dict | None = None):
+    user_states[user_id] = {"mode": mode, "data": data or {}}
 
-def get_state(uid):
-    return user_states.get(uid)
+def get_state(user_id: int):
+    return user_states.get(user_id)
 
-def clear_state(uid):
-    user_states.pop(uid, None)
+def clear_state(user_id: int):
+    if user_id in user_states:
+        del user_states[user_id]
 
-# ================== DB ==================
-async def init_db(app):
-    async with aiosqlite.connect("bot.db") as db:
+# ==============================
+# KEYBOARDS
+# ==============================
+
+MAIN_MENU = ReplyKeyboardMarkup(
+    [
+        ["Магазин", "Инвентарь", "Профиль"],
+        ["Майнинг", "Экспедиции", "Миссии"],
+        ["Дуэли", "Боссы", "Кланы"],
+        ["Донат"]
+    ],
+    resize_keyboard=True
+)
+
+BACK_MENU = ReplyKeyboardMarkup([["⬅️ Назад"]], resize_keyboard=True)
+
+# ==============================
+# DATABASE INIT
+# ==============================
+
+async def init_db():
+    async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
             username TEXT,
             balance INTEGER DEFAULT 1000,
+            donate_balance INTEGER DEFAULT 0,
+            exp INTEGER DEFAULT 0,
+            level INTEGER DEFAULT 1,
             wins INTEGER DEFAULT 0,
             losses INTEGER DEFAULT 0,
-            vip_until REAL DEFAULT 0,
-            sword INTEGER DEFAULT 0,
-            shield INTEGER DEFAULT 0,
-            crown INTEGER DEFAULT 0,
-            last_boss REAL DEFAULT 0
+            banned INTEGER DEFAULT 0,
+            clan_id INTEGER,
+            last_mining INTEGER DEFAULT 0,
+            last_expedition INTEGER DEFAULT 0,
+            last_mission INTEGER DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS items (
+            id INTEGER PRIMARY KEY,
+            name TEXT,
+            type TEXT,
+            description TEXT,
+            power INTEGER,
+            price INTEGER,
+            donate_price INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS inventory (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            item_id INTEGER,
+            amount INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS clans (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT,
+            owner_id INTEGER,
+            treasury INTEGER DEFAULT 0,
+            member_limit INTEGER DEFAULT 10
+        );
+
+        CREATE TABLE IF NOT EXISTS clan_roles (
+            clan_id INTEGER,
+            user_id INTEGER,
+            can_invite INTEGER,
+            can_kick INTEGER,
+            can_manage_roles INTEGER,
+            can_attack_boss INTEGER,
+            can_use_treasury INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS clan_bosses (
+            clan_id INTEGER,
+            last_attack INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS missions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            description TEXT,
+            reward_min INTEGER,
+            reward_max INTEGER
         );
         """)
         await db.commit()
 
-async def create_user(uid, username):
-    async with aiosqlite.connect("bot.db") as db:
+        cur = await db.execute("SELECT COUNT(*) FROM items")
+        if (await cur.fetchone())[0] == 0:
+            await db.executemany("""
+            INSERT INTO items VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, [
+                (1,"Меч +50","weapon","+50 к урону в PvP и PvE",50,500,5),
+                (2,"Щит +30","armor","+30 защиты",30,400,4),
+                (3,"Зелье силы","buff","+20% урона на бой",20,300,3),
+                (4,"Камень добычи","buff","+10% к фарму",10,200,2),
+                (5,"Эликсир HP","resource","+100 HP в рейдах",100,150,2),
+                (6,"Расширение клана","expansion","+5 слотов клана",5,50000,5),
+                (7,"Клановый бафф урона","clan_buff","+10% урона клана",10,1000,10),
+                (8,"Дебафф босса","clan_debuff","-10% силы босса",10,1000,10)
+            ])
+            await db.commit()
+
+# ==============================
+# USER INIT
+# ==============================
+
+async def ensure_user(db, user_id: int, username: str):
+    cur = await db.execute("SELECT user_id FROM users WHERE user_id=?", (user_id,))
+    if not await cur.fetchone():
         await db.execute(
-            "INSERT OR IGNORE INTO users (user_id, username) VALUES (?,?)",
-            (uid, username)
+            "INSERT INTO users (user_id, username) VALUES (?,?)",
+            (user_id, username)
         )
         await db.commit()
 
-async def get_user(uid):
-    async with aiosqlite.connect("bot.db") as db:
-        async with db.execute("SELECT * FROM users WHERE user_id=?", (uid,)) as c:
-            row = await c.fetchone()
-            if not row:
-                return None
-            user = dict(zip([x[0] for x in c.description], row))
-            user["vip"] = user["vip_until"] > time.time()
-            return user
+# ==============================
+# START / PROFILE
+# ==============================
 
-async def get_user_by_username(username):
-    async with aiosqlite.connect("bot.db") as db:
-        async with db.execute("SELECT * FROM users WHERE username=?", (username,)) as c:
-            row = await c.fetchone()
-            return dict(zip([x[0] for x in c.description], row)) if row else None
-
-# ================== MENUS ==================
-def reply_menu():
-    return ReplyKeyboardMarkup([
-        [KeyboardButton("🎁 Сундуки"), KeyboardButton("⚔️ Дуэли")],
-        [KeyboardButton("🏪 Магазин"), KeyboardButton("👹 Босс")],
-        [KeyboardButton("💸 Донат"), KeyboardButton("📊 Профиль")]
-    ], resize_keyboard=True)
-
-def inline_menu():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎁 Сундуки", callback_data="chests")],
-        [InlineKeyboardButton("⚔️ Дуэли", callback_data="duels")],
-        [InlineKeyboardButton("🏪 Магазин", callback_data="shop")],
-        [InlineKeyboardButton("👹 Босс", callback_data="boss")],
-        [InlineKeyboardButton("💸 Донат", callback_data="donate")],
-        [InlineKeyboardButton("📊 Профиль", callback_data="profile")]
-    ])
-
-def admin_menu():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("💰 Выдать деньги", callback_data="admin_money")],
-        [InlineKeyboardButton("⭐ Выдать VIP", callback_data="admin_vip")],
-        [InlineKeyboardButton("📦 Выдать предмет", callback_data="admin_item")],
-        [InlineKeyboardButton("🔙 В меню", callback_data="main")]
-    ])
-
-# ================== START ==================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    u = update.effective_user
-    await create_user(u.id, u.username or "unknown")
+    async with aiosqlite.connect(DB_PATH) as db:
+        await ensure_user(db, update.effective_user.id, update.effective_user.username or "")
     await update.message.reply_text(
-        "🎮 Игра запущена!",
-        reply_markup=reply_menu()
+        "⚔️ Добро пожаловать в MMO-мир!\n\n"
+        "PvP • Рейды • Кланы • Экономика\n"
+        "Развивайся и доминируй.",
+        reply_markup=MAIN_MENU
     )
 
-# ================== ADMIN ==================
-async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("❌ Нет доступа")
-        return
-    await update.message.reply_text("🔧 Админ-панель", reply_markup=admin_menu())
+async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("""
+        SELECT balance, donate_balance, level, exp, wins, losses
+        FROM users WHERE user_id=?
+        """, (uid,))
+        b,d,l,e,w,lo = await cur.fetchone()
 
-# ================== CALLBACK ==================
-async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        f"👤 Профиль\n\n"
+        f"💰 Баланс: {b}\n"
+        f"💎 Донат: {d}\n"
+        f"⭐ Уровень: {l}\n"
+        f"📊 Опыт: {e}\n"
+        f"⚔ Победы: {w}\n"
+        f"💀 Поражения: {lo}",
+        reply_markup=MAIN_MENU
+    )
+
+# ==============================
+# SHOP
+# ==============================
+
+async def shop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT id,name,price,donate_price FROM items")
+        items = await cur.fetchall()
+
+    kb = []
+    for i in items:
+        kb.append([InlineKeyboardButton(
+            f"{i[1]} | {i[2]}₽ / {i[3]}💎",
+            callback_data=f"shop_{i[0]}"
+        )])
+
+    await update.message.reply_text(
+        "🏪 Магазин",
+        reply_markup=InlineKeyboardMarkup(kb)
+    )
+
+async def shop_item(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
+    item_id = int(q.data.split("_")[1])
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("""
+        SELECT name,description,price,donate_price
+        FROM items WHERE id=?
+        """,(item_id,))
+        n,d,p,dp = await cur.fetchone()
+
+    await q.edit_message_text(
+        f"📦 {n}\n\n{d}\n\nЦена: {p}₽ / {dp}💎",
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("Купить за ₽", callback_data=f"buy_money_{item_id}"),
+                InlineKeyboardButton("Купить за 💎", callback_data=f"buy_donate_{item_id}")
+            ]
+        ])
+    )
+
+async def buy_item(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    _,method,item_id = q.data.split("_")
+    item_id = int(item_id)
     uid = q.from_user.id
-    user = await get_user(uid)
 
-    # ---------- MAIN ----------
-    if q.data == "main":
-        clear_state(uid)
-        await q.edit_message_text("🏠 Главное меню", reply_markup=inline_menu())
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT price,donate_price FROM items WHERE id=?", (item_id,))
+        price, dprice = await cur.fetchone()
 
-    # ---------- CHESTS ----------
-    elif q.data == "chests":
-        await q.edit_message_text(
-            "🎁 Сундуки",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("Обычный (100)", callback_data="chest_100")],
-                [InlineKeyboardButton("Редкий (300)", callback_data="chest_300")],
-                [InlineKeyboardButton("🔙 Назад", callback_data="main")]
-            ])
-        )
+        cur = await db.execute("SELECT balance,donate_balance FROM users WHERE user_id=?", (uid,))
+        bal,don = await cur.fetchone()
 
-    elif q.data.startswith("chest_"):
-        price = int(q.data.split("_")[1])
-        if user["balance"] < price:
-            await q.answer("❌ Недостаточно монет", show_alert=True)
-            return
-        reward = random.randint(price//2, price*2)
-        async with aiosqlite.connect("bot.db") as db:
-            await db.execute(
-                "UPDATE users SET balance=balance-?+? WHERE user_id=?",
-                (price, reward, uid)
-            )
-            await db.commit()
-        await q.edit_message_text(
-            f"🎉 Награда: {reward}",
-            reply_markup=inline_menu()
-        )
+        if method=="money":
+            if bal<price:
+                await q.edit_message_text("❌ Недостаточно средств")
+                return
+            await db.execute("UPDATE users SET balance=balance-? WHERE user_id=?", (price,uid))
+        else:
+            if don<dprice:
+                await q.edit_message_text("❌ Недостаточно доната")
+                return
+            await db.execute("UPDATE users SET donate_balance=donate_balance-? WHERE user_id=?", (dprice,uid))
 
-    # ---------- DUELS ----------
-    elif q.data == "duels":
-        set_state(uid, "duel")
-        await q.edit_message_text("⚔️ Введите: @user ставка")
+        cur = await db.execute("SELECT id FROM inventory WHERE user_id=? AND item_id=?", (uid,item_id))
+        row = await cur.fetchone()
+        if row:
+            await db.execute("UPDATE inventory SET amount=amount+1 WHERE id=?", (row[0],))
+        else:
+            await db.execute("INSERT INTO inventory (user_id,item_id,amount) VALUES (?,?,1)", (uid,item_id))
+        await db.commit()
 
-    # ---------- SHOP ----------
-    elif q.data == "shop":
-        await q.edit_message_text(
-            "🏪 Магазин",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⭐ VIP (500)", callback_data="buy_vip")],
-                [InlineKeyboardButton("🔙 Назад", callback_data="main")]
-            ])
-        )
+    await q.edit_message_text("✅ Покупка успешна")
 
-    elif q.data == "buy_vip":
-        if user["balance"] < 500:
-            await q.answer("❌ Недостаточно монет", show_alert=True)
-            return
-        async with aiosqlite.connect("bot.db") as db:
-            await db.execute(
-                "UPDATE users SET balance=balance-500, vip_until=? WHERE user_id=?",
-                (time.time()+86400*30, uid)
-            )
-            await db.commit()
-        await q.edit_message_text("⭐ VIP активирован", reply_markup=inline_menu())
+# ==============================
+# INVENTORY / MINING / DONATE
+# ==============================
 
-    # ---------- BOSS ----------
-    elif q.data == "boss":
-        dmg = random.randint(50,150)
-        reward = dmg * 3
-        async with aiosqlite.connect("bot.db") as db:
-            await db.execute(
-                "UPDATE users SET balance=balance+?, last_boss=? WHERE user_id=?",
-                (reward, time.time(), uid)
-            )
-            await db.commit()
-        await q.edit_message_text(
-            f"👹 Босс побеждён\n💥 {dmg}\n💰 {reward}",
-            reply_markup=inline_menu()
-        )
-
-    # ---------- DONATE ----------
-    elif q.data == "donate":
-        set_state(uid, "donate")
-        await q.edit_message_text("💸 Напишите заявку текстом")
-
-    # ---------- PROFILE ----------
-    elif q.data == "profile":
-        await q.edit_message_text(
-            f"📊 Профиль\n💰 {user['balance']}\n⭐ VIP: {'Да' if user['vip'] else 'Нет'}",
-            reply_markup=inline_menu()
-        )
-
-    # ---------- ADMIN ----------
-    elif uid == ADMIN_ID:
-        if q.data == "admin_money":
-            set_state(uid, "admin_money")
-            await q.edit_message_text("Введите: @user сумма")
-
-        elif q.data == "admin_vip":
-            set_state(uid, "admin_vip")
-            await q.edit_message_text("Введите: @user")
-
-# ================== TEXT ==================
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def inventory(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    text = update.message.text
-    state = get_state(uid)
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("""
+        SELECT items.name,items.type,inventory.amount
+        FROM inventory
+        JOIN items ON items.id=inventory.item_id
+        WHERE inventory.user_id=?
+        """,(uid,))
+        rows = await cur.fetchall()
 
-    # reply → inline
-    if text in ["🎁 Сундуки","⚔️ Дуэли","🏪 Магазин","👹 Босс","💸 Донат","📊 Профиль"]:
-        await update.message.reply_text("⬇️", reply_markup=inline_menu())
-        return
+    if not rows:
+        text="🎒 Инвентарь пуст"
+    else:
+        text="🎒 Инвентарь:\n\n"
+        for r in rows:
+            text+=f"{r[0]} ({r[1]}) x{r[2]}\n"
 
-    if not state:
-        return
+    await update.message.reply_text(text, reply_markup=MAIN_MENU)
 
-    # donate
-    if state["mode"] == "donate":
-        await context.bot.send_message(
-            chat_id=f"@{DONATE_ADMIN}",
-            text=f"💸 Донат от @{update.effective_user.username}\n{text}"
-        )
-        clear_state(uid)
-        await update.message.reply_text("✅ Заявка отправлена", reply_markup=reply_menu())
-
-    # duel
-    elif state["mode"] == "duel":
-        parts = text.split()
-        if len(parts)!=2 or not parts[0].startswith("@"):
-            await update.message.reply_text("❌ Формат неверный")
+async def mining(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    now=int(time.time())
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur=await db.execute("SELECT last_mining FROM users WHERE user_id=?", (uid,))
+        last=(await cur.fetchone())[0]
+        if now-last<300:
+            await update.message.reply_text("⛏️ КД 5 минут")
             return
-        opponent = await get_user_by_username(parts[0][1:])
-        if not opponent:
-            await update.message.reply_text("❌ Игрок не найден")
-            return
-        win = random.random() > 0.5
-        msg = "🏆 Победа!" if win else "❌ Поражение"
-        clear_state(uid)
-        await update.message.reply_text(msg, reply_markup=reply_menu())
+        reward=random.randint(50,150)
+        await db.execute("UPDATE users SET balance=balance+?, last_mining=? WHERE user_id=?", (reward,now,uid))
+        await db.commit()
+    await update.message.reply_text(f"⛏️ Добыто {reward}₽", reply_markup=MAIN_MENU)
 
-    # admin money
-    elif state["mode"] == "admin_money":
-        u, amt = text.split()
-        target = await get_user_by_username(u[1:])
-        async with aiosqlite.connect("bot.db") as db:
-            await db.execute(
-                "UPDATE users SET balance=balance+? WHERE user_id=?",
-                (int(amt), target["user_id"])
-            )
-            await db.commit()
-        clear_state(uid)
-        await update.message.reply_text("✅ Выдано", reply_markup=reply_menu())
+async def donate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "💎 Донат\n\n"
+        "Используется для покупки премиум-контента.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Написать админу", url="https://t.me/soblaznss")]
+        ])
+    )
 
-# ================== MAIN ==================
+# ==============================
+# ADMIN
+# ==============================
+
+async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id!=ADMIN_ID:
+        return
+    await update.message.reply_text(
+        "/give_balance id amt\n"
+        "/give_donate id amt\n"
+        "/ban id\n"
+        "/unban id"
+    )
+
+async def give_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id!=ADMIN_ID:
+        return
+    uid=int(context.args[0])
+    amt=int(context.args[1])
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE users SET balance=balance+? WHERE user_id=?", (amt,uid))
+        await db.commit()
+    await update.message.reply_text("OK")
+
+async def give_donate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id!=ADMIN_ID:
+        return
+    uid=int(context.args[0])
+    amt=int(context.args[1])
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE users SET donate_balance=donate_balance+? WHERE user_id=?", (amt,uid))
+        await db.commit()
+    await update.message.reply_text("OK")
+
+async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id!=ADMIN_ID:
+        return
+    uid=int(context.args[0])
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE users SET banned=1 WHERE user_id=?", (uid,))
+        await db.commit()
+    await update.message.reply_text("BANNED")
+
+async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id!=ADMIN_ID:
+        return
+    uid=int(context.args[0])
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE users SET banned=0 WHERE user_id=?", (uid,))
+        await db.commit()
+    await update.message.reply_text("UNBANNED")
+
+# ==============================
+# MAIN
+# ==============================
+
 def main():
-    app = Application.builder().token(BOT_TOKEN).build()
-    app.post_init = init_db
+    app=ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("admin", admin_cmd))
-    app.add_handler(CallbackQueryHandler(callback))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(CommandHandler("admin", admin))
+    app.add_handler(CommandHandler("give_balance", give_balance))
+    app.add_handler(CommandHandler("give_donate", give_donate))
+    app.add_handler(CommandHandler("ban", ban))
+    app.add_handler(CommandHandler("unban", unban))
 
-    print("🤖 Бот запущен")
+    app.add_handler(MessageHandler(filters.Regex("^Профиль$"), profile))
+    app.add_handler(MessageHandler(filters.Regex("^Магазин$"), shop))
+    app.add_handler(MessageHandler(filters.Regex("^Инвентарь$"), inventory))
+    app.add_handler(MessageHandler(filters.Regex("^Майнинг$"), mining))
+    app.add_handler(MessageHandler(filters.Regex("^Донат$"), donate))
+
+    app.add_handler(CallbackQueryHandler(shop_item, pattern="^shop_"))
+    app.add_handler(CallbackQueryHandler(buy_item, pattern="^buy_"))
+
+    async def on_start(app):
+        await init_db()
+
+    app.post_init=on_start
     app.run_polling()
 
-if __name__ == "__main__":
+if __name__=="__main__":
     main()
