@@ -5,15 +5,16 @@ import random
 from datetime import datetime, timedelta
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, CallbackQueryHandler, MessageHandler, filters
-from dotenv import load_dotenv
 import os
+from dotenv import load_dotenv
 
 # =========================
 # Загружаем .env
 # =========================
 load_dotenv()
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_IDS = [int(os.getenv("ADMIN_ID"))]
+ADMIN_IDS = [int(os.getenv("ADMIN_ID"))]  # теперь точно строку преобразуем в int
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME")
 
 # =========================
