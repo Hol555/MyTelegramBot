@@ -19,9 +19,9 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 # Глобальные состояния
-user_states = {}  # user_id: {'state': 'admin_currency_username', 'data': {...}}
-duel_rooms = {}  # room_id: {'host_id': user_id, 'bet': amount, 'created': timestamp}
-waiting_duels = {}  # user_id: {'bet': amount, 'timestamp': time}
+user_states = {}
+duel_rooms = {}
+waiting_duels = {}
 
 async def init_db(application: Application):
     async with aiosqlite.connect('bot.db') as db:
@@ -183,8 +183,7 @@ def duel_menu():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-# ✅ ИСПРАВЛЕНО: duel_rooms_menu теперь async
-async def duel_rooms_menu(rooms, context: ContextTypes.DEFAULT_TYPE):
+async def duel_rooms_menu(rooms):
     keyboard = []
     for room_id, room_data in rooms.items():
         host_data = await get_user_data(room_data['host_id'])
@@ -200,8 +199,9 @@ async def duel_rooms_menu(rooms, context: ContextTypes.DEFAULT_TYPE):
     keyboard.append([InlineKeyboardButton("🔙 Дуэли", callback_data="duel_back")])
     return InlineKeyboardMarkup(keyboard)
 
-# Дуэль комнаты
+# Дуэль комнаты (✅ ИСПРАВЛЕНО global)
 async def create_duel_room(user_id, bet):
+    global duel_rooms
     room_id = len(duel_rooms) + 1
     duel_rooms[room_id] = {
         'host_id': user_id, 
@@ -211,19 +211,18 @@ async def create_duel_room(user_id, bet):
     }
     # Удаляем старые комнаты (>5 мин)
     now = time.time()
-    global duel_rooms
     duel_rooms = {k: v for k, v in duel_rooms.items() if now - v['created'] < 300}
     return room_id
 
 async def get_active_rooms():
-    now = time.time()
     global duel_rooms
+    now = time.time()
     active_rooms = {k: v for k, v in duel_rooms.items() if now - v['created'] < 300}
     return active_rooms
 
 async def cleanup_duel_rooms():
-    now = time.time()
     global duel_rooms
+    now = time.time()
     expired = [k for k, v in duel_rooms.items() if now - v['created'] > 300]
     for room_id in expired:
         duel_rooms.pop(room_id, None)
@@ -254,55 +253,9 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text("👑 **Админ панель**", parse_mode='Markdown', reply_markup=admin_main_menu())
 
-# Обработчик админ команд
-async def handle_admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    text = update.message.text
-    
-    if text == "💰 Валюта":
-        set_user_state(user_id, 'admin_currency_username')
-        await update.message.reply_text("👤 Введите username для выдачи валюты:")
-    
-    elif text == "⭐ VIP/Предметы":
-        keyboard = [
-            [KeyboardButton("⚔️ Легендарный меч"), KeyboardButton("👑 Королевская корона")],
-            [KeyboardButton("🛡️ Абсолютный щит"), KeyboardButton("⭐ VIP")]
-        ]
-        await update.message.reply_text("🎁 Выберите предмет:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True))
-        set_user_state(user_id, 'admin_item_select')
-    
-    elif text == "🔨 Бан":
-        set_user_state(user_id, 'admin_ban_username')
-        await update.message.reply_text("👤 Введите username для бана:")
-    
-    elif text == "✅ Разбан":
-        set_user_state(user_id, 'admin_unban_username')
-        await update.message.reply_text("👤 Введите username для разбана:")
-    
-    elif text == "👥 Топ игроков":
-        users = await get_all_users()
-        top_text = "👥 **Топ 10 игроков:**\n\n"
-        for i, (uid, uname, bal) in enumerate(users, 1):
-            top_text += f"{i}. @{uname} — {bal:,}₽\n"
-        await update.message.reply_text(top_text, parse_mode='Markdown', reply_markup=admin_main_menu())
-    
-    elif text == "📊 Статистика":
-        async with aiosqlite.connect('bot.db') as db:
-            total_users = await db.execute_fetchall('SELECT COUNT(*) FROM users')
-            total_money = await db.execute_fetchall('SELECT SUM(balance) FROM users')
-            await update.message.reply_text(
-                f"📊 **Статистика бота:**\n"
-                f"👥 Игроков: {total_users[0][0]}\n"
-                f"💰 Общий баланс: {total_money[0][0] or 0:,}₽",
-                parse_mode='Markdown', reply_markup=admin_main_menu()
-            )
-    
-    elif text == "🔙 Главное меню":
-        clear_user_state(user_id)
-        await update.message.reply_text("🏠 Главное меню", reply_markup=main_menu())
-
 # Обработчик сообщений
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global duel_rooms
     user_id = update.effective_user.id
     
     if await is_banned(user_id) and user_id != ADMIN_ID:
@@ -311,6 +264,51 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     text = update.message.text
     state = get_user_state(user_id)
+    
+    # ✅ АДМИН КОМАНДЫ
+    if user_id == ADMIN_ID:
+        if text == "💰 Валюта":
+            set_user_state(user_id, 'admin_currency_username')
+            await update.message.reply_text("👤 Введите username для выдачи валюты:")
+            return
+        elif text == "⭐ VIP/Предметы":
+            keyboard = [
+                [KeyboardButton("⚔️ Легендарный меч"), KeyboardButton("👑 Королевская корона")],
+                [KeyboardButton("🛡️ Абсолютный щит"), KeyboardButton("⭐ VIP")]
+            ]
+            await update.message.reply_text("🎁 Выберите предмет:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True))
+            set_user_state(user_id, 'admin_item_select')
+            return
+        elif text == "🔨 Бан":
+            set_user_state(user_id, 'admin_ban_username')
+            await update.message.reply_text("👤 Введите username для бана:")
+            return
+        elif text == "✅ Разбан":
+            set_user_state(user_id, 'admin_unban_username')
+            await update.message.reply_text("👤 Введите username для разбана:")
+            return
+        elif text == "👥 Топ игроков":
+            users = await get_all_users()
+            top_text = "👥 **Топ 10 игроков:**\n\n"
+            for i, (uid, uname, bal) in enumerate(users, 1):
+                top_text += f"{i}. @{uname} — {bal:,}₽\n"
+            await update.message.reply_text(top_text, parse_mode='Markdown', reply_markup=admin_main_menu())
+            return
+        elif text == "📊 Статистика":
+            async with aiosqlite.connect('bot.db') as db:
+                total_users = await db.execute_fetchall('SELECT COUNT(*) FROM users')
+                total_money = await db.execute_fetchall('SELECT SUM(balance) FROM users')
+            await update.message.reply_text(
+                f"📊 **Статистика бота:**\n"
+                f"👥 Игроков: {total_users[0][0]}\n"
+                f"💰 Общий баланс: {total_money[0][0] or 0:,}₽",
+                parse_mode='Markdown', reply_markup=admin_main_menu()
+            )
+            return
+        elif text == "🔙 Главное меню":
+            clear_user_state(user_id)
+            await update.message.reply_text("🏠 Главное меню", reply_markup=main_menu())
+            return
     
     # ✅ АДМИН СОСТОЯНИЯ - TEXT INPUT
     if user_id == ADMIN_ID and state:
@@ -327,10 +325,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ✅ ОСНОВНЫЕ КНОПКИ
     if text == "⚔️ Дуэли":
         await update.message.reply_text("⚔️ **Дуэли**\n\nВыберите действие:", reply_markup=duel_menu(), parse_mode='Markdown')
-    
     elif text == "🛒 Магазин":
         await update.message.reply_text("🛒 **Донат магазин**\n\nВыберите предмет:", reply_markup=shop_menu())
-    
     elif text == "💰 Баланс":
         sword = user_data[13] or 0
         crown = user_data[14] or 0
@@ -341,7 +337,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🎁 **Предметы:** {' | '.join(items)}",
             parse_mode='Markdown', reply_markup=main_menu()
         )
-    
     else:
         await update.message.reply_text("👆 Выберите кнопку меню", reply_markup=main_menu())
 
@@ -545,7 +540,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "duel_rooms":
         rooms = await get_active_rooms()
         if rooms:
-            markup = await duel_rooms_menu(rooms, context)
+            markup = await duel_rooms_menu(rooms)
             await query.edit_message_text("📋 **Активные комнаты:**", reply_markup=markup)
         else:
             await query.edit_message_text("📭 **Нет активных комнат**\n\n🔍 Создайте свою!", reply_markup=InlineKeyboardMarkup([
@@ -565,18 +560,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     else:
         await query.edit_message_text("🏠 **Главное меню**", reply_markup=main_menu())
-
-def mining_menu():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("⛏️ Копать (5 мин)", callback_data="mining_start")],
-        [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
-    ])
-
-def expedition_menu():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🗺️ Экспедиция (15 мин)", callback_data="expedition_start")],
-        [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
-    ])
 
 # Основной запуск
 def main():
