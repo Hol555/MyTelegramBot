@@ -5,6 +5,7 @@ import aiosqlite
 import random
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
+import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
