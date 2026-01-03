@@ -1,247 +1,140 @@
 #!/usr/bin/env python3
 import os
-import asyncio
 import logging
-import random
-import time
-from datetime import datetime
 import aiosqlite
+import random
+import asyncio
+from datetime import datetime
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# ---------------- CONFIG ----------------
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS","").split(",") if x]
-ADMIN_USERNAME = os.getenv("ADMIN_USERNAME","YOUR_USERNAME")
+ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",")]
 
-DB_PATH = "bot.db"
-VIP_BONUS_MULTIPLIER = 2
-GAME_RESOURCES = ["gold","gems","crystals"]
-RARE_RESOURCES = ["diamond","artifact","crystal_shard"]
+# ----------------- База данных -----------------
+class GameDatabase:
+    def __init__(self, db_path="bot.db"):
+        self.db_path = db_path
 
-# ---------------- DATABASE ----------------
-class DB:
-    def __init__(self, path=DB_PATH):
-        self.path = path
-
-    async def init(self):
-        async with aiosqlite.connect(self.path) as db:
-            await db.executescript("""
-            CREATE TABLE IF NOT EXISTS users(
-                user_id INTEGER PRIMARY KEY,
-                username TEXT,
-                gold INTEGER DEFAULT 0,
-                gems INTEGER DEFAULT 0,
-                crystals INTEGER DEFAULT 0,
-                xp INTEGER DEFAULT 0,
-                level INTEGER DEFAULT 1,
-                vip_until INTEGER,
-                banned INTEGER DEFAULT 0,
-                wins INTEGER DEFAULT 0,
-                losses INTEGER DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE TABLE IF NOT EXISTS duels(
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                player1 INTEGER,
-                player2 INTEGER,
-                stake_currency TEXT,
-                stake_amount INTEGER,
-                winner INTEGER,
-                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE TABLE IF NOT EXISTS promocodes(
-                code TEXT PRIMARY KEY,
-                currency TEXT,
-                amount INTEGER,
-                active INTEGER DEFAULT 1
-            );
+    async def init_db(self):
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id INTEGER PRIMARY KEY,
+                    username TEXT,
+                    first_name TEXT,
+                    total_score INTEGER DEFAULT 0,
+                    games_played INTEGER DEFAULT 0,
+                    best_score INTEGER DEFAULT 0,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS games (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    score INTEGER NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id)
+                )
             """)
             await db.commit()
+            logger.info("✅ DB initialized")
 
-    async def add_user(self, u):
-        async with aiosqlite.connect(self.path) as db:
-            await db.execute(
-                "INSERT OR IGNORE INTO users(user_id,username) VALUES (?,?)",
-                (u.id,u.username or "NoUsername")
-            )
+    async def add_user(self, user_id, username, first_name):
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                INSERT OR IGNORE INTO users (user_id, username, first_name)
+                VALUES (?, ?, ?)
+            """, (user_id, username, first_name))
             await db.commit()
 
-    async def get_user(self, uid):
-        async with aiosqlite.connect(self.path) as db:
-            c = await db.execute("SELECT * FROM users WHERE user_id=?",(uid,))
-            return await c.fetchone()
-
-    async def update_currency(self, uid, currency, amount):
-        async with aiosqlite.connect(self.path) as db:
-            await db.execute(f"UPDATE users SET {currency}={currency}+? WHERE user_id=?",(amount,uid))
+    async def add_score(self, user_id, score):
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("INSERT INTO games (user_id, score) VALUES (?, ?)", (user_id, score))
+            await db.execute("""
+                UPDATE users
+                SET total_score = total_score + ?,
+                    games_played = games_played + 1,
+                    best_score = MAX(best_score, ?)
+                WHERE user_id = ?
+            """, (score, score, user_id))
             await db.commit()
 
-    async def add_xp(self, uid, xp):
-        async with aiosqlite.connect(self.path) as db:
-            await db.execute("UPDATE users SET xp=xp+? WHERE user_id=?",(xp,uid))
-            user = await self.get_user(uid)
-            if user:
-                new_level = (user[5]+xp)//50 +1
-                if new_level>user[6]:
-                    await db.execute("UPDATE users SET level=? WHERE user_id=?",(new_level,uid))
-            await db.commit()
+    async def get_user_stats(self, user_id):
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("""
+                SELECT total_score, games_played, best_score
+                FROM users WHERE user_id = ?
+            """, (user_id,)) as cursor:
+                return await cursor.fetchone() or (0, 0, 0)
 
-    async def set_vip(self, uid, until_timestamp):
-        async with aiosqlite.connect(self.path) as db:
-            await db.execute("UPDATE users SET vip_until=? WHERE user_id=?",(until_timestamp,uid))
-            await db.commit()
+db = GameDatabase()
 
-    async def ban_user(self, uid):
-        async with aiosqlite.connect(self.path) as db:
-            await db.execute("UPDATE users SET banned=1 WHERE user_id=?",(uid,))
-            await db.commit()
-
-    async def unban_user(self, uid):
-        async with aiosqlite.connect(self.path) as db:
-            await db.execute("UPDATE users SET banned=0 WHERE user_id=?",(uid,))
-            await db.commit()
-
-    async def get_top(self, field="gold", limit=10):
-        async with aiosqlite.connect(self.path) as db:
-            c = await db.execute(f"SELECT username,{field} FROM users ORDER BY {field} DESC LIMIT ?",(limit,))
-            return await c.fetchall()
-
-    async def add_promocode(self, code, currency, amount):
-        async with aiosqlite.connect(self.path) as db:
-            await db.execute("INSERT OR REPLACE INTO promocodes(code,currency,amount,active) VALUES (?,?,?,1)",(code,currency,amount))
-            await db.commit()
-
-    async def use_promocode(self, code):
-        async with aiosqlite.connect(self.path) as db:
-            c = await db.execute("SELECT currency,amount,active FROM promocodes WHERE code=?",(code,))
-            result = await c.fetchone()
-            if result and result[2]==1:
-                await db.execute("UPDATE promocodes SET active=0 WHERE code=?",(code,))
-                await db.commit()
-                return result[0],result[1]
-            return None,None
-
-db = DB()
-
-# ---------------- HELPERS ----------------
-def vip_text(vip_until):
-    if vip_until==0: return "♾ навсегда"
-    if vip_until and vip_until>int(time.time()): return datetime.fromtimestamp(vip_until).strftime("%d.%m.%Y")
-    return "—"
-
-def is_vip(vip_until):
-    if vip_until is None: return False
-    if vip_until==0: return True
-    return vip_until>int(time.time())
-
-# ---------------- START ----------------
+# ----------------- Хендлеры -----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await db.add_user(update.effective_user)
-    kb = [
-        [InlineKeyboardButton("🎮 Добыча",callback_data="farm")],
-        [InlineKeyboardButton("🗺 Экспедиции",callback_data="expedition")],
-        [InlineKeyboardButton("👤 Профиль",callback_data="profile")],
-        [InlineKeyboardButton("🏆 Топ-10",callback_data="stats")],
-        [InlineKeyboardButton("💎 Купить VIP",url=f"https://t.me/{ADMIN_USERNAME}")]
+    user = update.effective_user
+    await db.add_user(user.id, user.username, user.first_name)
+
+    keyboard = [
+        [InlineKeyboardButton("🎮 Играть!", callback_data="play_game")],
+        [InlineKeyboardButton("📊 Профиль", callback_data="profile")],
+        [InlineKeyboardButton("🏆 Топ-10", callback_data="leaderboard")]
     ]
-    if update.effective_user.id in ADMIN_IDS:
-        kb.append([InlineKeyboardButton("🛠 Админ панель",callback_data="admin")])
-    await update.message.reply_text("🎮 Добро пожаловать!",reply_markup=InlineKeyboardMarkup(kb))
+    await update.message.reply_text(
+        f"🎉 Добро пожаловать, {user.first_name}!\nВыберите действие:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
-# ---------------- CALLBACK ----------------
-async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    uid = q.from_user.id
-    data = q.data
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
 
-    user = await db.get_user(uid)
-    if not user:
-        await db.add_user(q.from_user)
-        user = await db.get_user(uid)
+    if data == "play_game":
+        await start_game(query)
+    elif data == "profile":
+        await show_profile(query)
+    elif data == "leaderboard":
+        await show_leaderboard(query)
 
-    # ---------------- PROFILE ----------------
-    if data=="profile":
-        text = f"👤 Профиль @{user[1]}\n💰 Gold: {user[2]}\n💎 Gems: {user[3]}\n🔹 Crystals: {user[4]}\n⚡ XP: {user[5]}\n🏆 Level: {user[6]}\n👑 VIP: {vip_text(user[7])}\nWins: {user[9]}\nLosses: {user[10]}"
-        kb = [[InlineKeyboardButton("🏠 Главное меню",callback_data="main")]]
-        await q.edit_message_text(text,reply_markup=InlineKeyboardMarkup(kb))
+async def start_game(query):
+    await query.edit_message_text("🎮 Игра началась! Ждём 5 секунд...")
+    await asyncio.sleep(5)
+    score = random.randint(10, 50)
+    await db.add_score(query.from_user.id, score)
+    await query.edit_message_text(f"🏁 Игра закончена! Очки: {score}")
 
-    # ---------------- FARM ----------------
-    elif data=="farm":
-        multiplier = VIP_BONUS_MULTIPLIER if is_vip(user[7]) else 1
-        resource = random.choice(GAME_RESOURCES)
-        amount = int(random.randint(1,10)*multiplier)
-        await db.update_currency(uid,resource,amount)
-        await db.add_xp(uid,random.randint(1,5)*multiplier)
-        kb = [[InlineKeyboardButton("🎮 Добыча",callback_data="farm")],[InlineKeyboardButton("🏠 Главное меню",callback_data="main")]]
-        await q.edit_message_text(f"🎉 Вы добыли {amount} {resource}!",reply_markup=InlineKeyboardMarkup(kb))
+async def show_profile(query):
+    total, games, best = await db.get_user_stats(query.from_user.id)
+    await query.edit_message_text(
+        f"📊 Профиль {query.from_user.first_name}\n"
+        f"💰 Всего очков: {total}\n"
+        f"⚡ Игр: {games}\n"
+        f"🎯 Рекорд: {best}"
+    )
 
-    # ---------------- EXPEDITION ----------------
-    elif data=="expedition":
-        multiplier = VIP_BONUS_MULTIPLIER if is_vip(user[7]) else 1
-        resource = random.choice(GAME_RESOURCES + RARE_RESOURCES)
-        amount = random.randint(1,5) * multiplier
-        xp = random.randint(5,15) * multiplier
-        rare = resource in RARE_RESOURCES
-        await db.update_currency(uid,resource,amount)
-        await db.add_xp(uid,xp)
-        kb = [[InlineKeyboardButton("🗺 Экспедиция",callback_data="expedition")],[InlineKeyboardButton("🏠 Главное меню",callback_data="main")]]
-        await q.edit_message_text(
-            f"🗺 Экспедиция завершена!\n🎁 Получено: {amount} {resource}\n⚡ XP: {xp}\n{'💎 Редкий ресурс!' if rare else ''}",
-            reply_markup=InlineKeyboardMarkup(kb)
-        )
+async def show_leaderboard(query):
+    async with aiosqlite.connect(db.db_path) as conn:
+        async with conn.execute("SELECT first_name, total_score FROM users ORDER BY total_score DESC LIMIT 10") as cur:
+            rows = await cur.fetchall()
+    text = "🏆 ТОП-10 игроков:\n"
+    for i, (name, score) in enumerate(rows, 1):
+        text += f"{i}. {name} — {score} очков\n"
+    await query.edit_message_text(text)
 
-    # ---------------- STATS ----------------
-    elif data=="stats":
-        top_gold = await db.get_top("gold")
-        text="🏆 Топ по Gold:\n"
-        for i,(name,val) in enumerate(top_gold,1):
-            text+=f"{i}. {name}: {val}\n"
-        kb=[[InlineKeyboardButton("🏠 Главное меню",callback_data="main")]]
-        await q.edit_message_text(text,reply_markup=InlineKeyboardMarkup(kb))
-
-    # ---------------- ADMIN ----------------
-    elif data=="admin" and uid in ADMIN_IDS:
-        kb = [
-            [InlineKeyboardButton("🎖 Выдать VIP",callback_data="admin_vip")],
-            [InlineKeyboardButton("💰 Выдать валюту",callback_data="admin_currency")],
-            [InlineKeyboardButton("🚫 Бан",callback_data="admin_ban")],
-            [InlineKeyboardButton("✅ Разбан",callback_data="admin_unban")],
-            [InlineKeyboardButton("🏠 Главное меню",callback_data="main")]
-        ]
-        await q.edit_message_text("🛠 Админ-панель",reply_markup=InlineKeyboardMarkup(kb))
-
-    # ---------------- MAIN MENU ----------------
-    elif data=="main":
-        await start(update,context)
-
-    else:
-        kb=[[InlineKeyboardButton("🏠 Главное меню",callback_data="main")]]
-        await q.edit_message_text("❌ Неизвестная кнопка. Вернитесь в главное меню.",reply_markup=InlineKeyboardMarkup(kb))
-
-# ---------------- MAIN ----------------
+# ----------------- Основной запуск -----------------
 async def main():
-    await db.init()
+    await db.init_db()
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(callback))
+    app.add_handler(CallbackQueryHandler(button_callback))
     await app.run_polling()
 
-if __name__=="__main__":
-    # --- исправленный запуск для Python 3.13 ---
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-
-    if loop and loop.is_running():
-        asyncio.create_task(main())
-        loop.run_forever()
-    else:
-        asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
