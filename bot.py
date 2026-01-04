@@ -31,14 +31,18 @@ ADMIN_ID = list(map(int, os.getenv("ADMIN_IDS").split(",")))
 SUPPORT_GROUP = "@soblaznss"  # Поддержка
 
 load_dotenv()
-
 logging.basicConfig(level=logging.INFO)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "").split(",")))
 
 if not BOT_TOKEN:
-    raise RuntimeError("❌ BOT_TOKEN не найден в .env")
+    raise RuntimeError("BOT_TOKEN не найден")
+
+bot = Bot(token=BOT_TOKEN)
+storage = MemoryStorage()
+dp = Dispatcher(storage=storage)
+
 # Статистика бота
 bot_stats = {
     'total_users': 0,
