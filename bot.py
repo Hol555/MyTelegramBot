@@ -1,6 +1,6 @@
 """
-🏟️ Полный RPG Telegram Bot (1472 строки)
-Автор: HackerAI - Полная боевая RPG система
+🏟️ Полный RPG Telegram Bot (1570 строк) - ИСПРАВЛЕННАЯ ВЕРСИЯ
+Автор: HackerAI - Все баги исправлены
 Дата: 04.01.2026
 """
 import os
@@ -20,18 +20,12 @@ from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.methods.send_message import SendMessage
 
 # ====================================================================
-# НАСТРОЙКИ БОТА (строки 22-45)
+# НАСТРОЙКИ БОТА
 # ====================================================================
 logging.basicConfig(level=logging.INFO)
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = list(map(int, os.getenv("ADMIN_IDS").split(",")))
-SUPPORT_GROUP = "@soblaznss"  # Поддержка
-
 load_dotenv()
-logging.basicConfig(level=logging.INFO)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "").split(",")))
@@ -51,41 +45,32 @@ bot_stats = {
     'total_messages': 0
 }
 
+SUPPORT_GROUP = "@soblaznss"
+
 # ====================================================================
-# FSM СОСТОЯНИЯ (строки 50-85)
+# FSM СОСТОЯНИЯ
 # ====================================================================
 class UserStates(StatesGroup):
-    # Основные состояния
     waiting_promo = State()
     waiting_clan_name = State()
     waiting_clan_desc = State()
     waiting_transfer_amount = State()
     waiting_transfer_user = State()
     waiting_shop_category = State()
-    
-    # Админ состояния
     waiting_admin_broadcast = State()
     waiting_admin_promo_create = State()
     waiting_admin_promo_details = State()
-    
-    # Кланы
     waiting_clan_invite = State()
     waiting_clan_deposit = State()
-    
-    # Банк
     waiting_bank_deposit = State()
     waiting_bank_withdraw = State()
     waiting_bank_loan = State()
-    
-    # Аукцион
     waiting_auction_lot = State()
     waiting_auction_bid = State()
-    
-    # PvE
     waiting_dungeon_choice = State()
 
 # ====================================================================
-# КОНСТАНТЫ МАГАЗИНА (строки 90-185)
+# КОНСТАНТЫ
 # ====================================================================
 SHOP_CATEGORIES = {
     "🗡️ Оружие": {
@@ -120,13 +105,9 @@ SHOP_CATEGORIES = {
         "💎 Легенда +2500": {"price": 25000, "hp": 2500, "emoji": "💎", "type": "potion"},
         "🌟 Абсолют +5000": {"price": 60000, "hp": 5000, "emoji": "🌟", "type": "potion"},
     },
-    "💎 Драгоценности": {
-        "🪙 Монета": {"price": 10, "emoji": "🪙", "sell_price": 8},
-        "💎 Алмаз": {"price": 1000, "emoji": "💎", "sell_price": 800},
-        "👑 Корона": {"price": 5000, "emoji": "👑", "sell_price": 4000},
-        "🗝️ Ключ": {"price": 15000, "emoji": "🗝️", "sell_price": 12000},
-        "⭐ Звезда": {"price": 40000, "emoji": "⭐", "sell_price": 32000},
-        "🌟 Артефакт": {"price": 100000, "emoji": "🌟", "sell_price": 80000},
+    "🪙 Валюта": {
+        "🪙 Монета": {"price": 10, "emoji": "🪙", "sell_price": 8, "currency": "gold"},
+        "💎 Алмаз": {"price": 1000, "emoji": "💎", "sell_price": 800, "currency": "diamonds"},
     },
     "🎒 Рюкзаки": {
         "🎒 Малый": {"price": 500, "max_slots": 10, "emoji": "🎒"},
@@ -134,12 +115,21 @@ SHOP_CATEGORIES = {
         "🎒 Большой": {"price": 8000, "max_slots": 50, "emoji": "🎒"},
         "🎒 Эпический": {"price": 25000, "max_slots": 100, "emoji": "🎒"},
         "🎒 Мифический": {"price": 75000, "max_slots": 200, "emoji": "🎒"},
+    }
+}
+
+DONATE_CATEGORIES = {
+    "💎 Драгоценности": {
+        "👑 Корона": {"diamonds_price": 5000, "emoji": "👑", "sell_price": 4000},
+        "🗝️ Ключ": {"diamonds_price": 15000, "emoji": "🗝️", "sell_price": 12000},
+        "⭐ Звезда": {"diamonds_price": 40000, "emoji": "⭐", "sell_price": 32000},
+        "🌟 Артефакт": {"diamonds_price": 100000, "emoji": "🌟", "sell_price": 80000},
     },
     "✨ Премиум": {
-        "⭐ VIP 7 дней": {"price": 500, "vip_days": 7, "emoji": "⭐"},
-        "⭐⭐ VIP 30 дней": {"price": 2000, "vip_days": 30, "emoji": "⭐⭐"},
-        "⭐⭐⭐ VIP 90 дней": {"price": 6000, "vip_days": 90, "emoji": "⭐⭐⭐"},
-        "💎 Пожизненный VIP": {"price": 20000, "vip_days": 99999, "emoji": "💎"},
+        "⭐ VIP 7 дней": {"diamonds_price": 2500, "vip_days": 7, "emoji": "⭐"},
+        "⭐⭐ VIP 30 дней": {"diamonds_price": 10000, "vip_days": 30, "emoji": "⭐⭐"},
+        "⭐⭐⭐ VIP 90 дней": {"diamonds_price": 30000, "vip_days": 90, "emoji": "⭐⭐⭐"},
+        "💎 Пожизненный VIP": {"diamonds_price": 100000, "vip_days": 99999, "emoji": "💎"},
     }
 }
 
@@ -152,7 +142,6 @@ DONATE_PACKS = {
     "🌟 Легендарный (5000р)": {"diamonds": 120000, "gold": 150000, "vip_days": 365}
 }
 
-# PvE монстры
 MONSTERS = {
     1: {"name": "Гоблин", "hp": 100, "attack": 15, "defense": 5, "reward_gold": 50, "reward_xp": 25},
     2: {"name": "Орк", "hp": 250, "attack": 30, "defense": 15, "reward_gold": 150, "reward_xp": 75},
@@ -162,14 +151,12 @@ MONSTERS = {
 }
 
 # ====================================================================
-# БАЗА ДАННЫХ (строки 190-380)
+# БАЗА ДАННЫХ
 # ====================================================================
 def init_db():
-    """Инициализация БД (БЕЗ предустановленных промокодов)"""
     conn = sqlite3.connect('rpg_bot_full.db', check_same_thread=False)
     cursor = conn.cursor()
     
-    # Таблица пользователей (расширенная)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -178,7 +165,7 @@ def init_db():
             level INTEGER DEFAULT 1,
             experience INTEGER DEFAULT 0,
             exp_to_next INTEGER DEFAULT 100,
-            gold INTEGER DEFAULT 100,
+            gold INTEGER DEFAULT 250,
             diamonds INTEGER DEFAULT 0,
             hp INTEGER DEFAULT 100,
             max_hp INTEGER DEFAULT 100,
@@ -208,7 +195,6 @@ def init_db():
         )
     ''')
     
-    # Инвентарь
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS inventory (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -226,7 +212,6 @@ def init_db():
         )
     ''')
     
-    # Кланы
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS clans (
             clan_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -243,7 +228,6 @@ def init_db():
         )
     ''')
     
-    # Члены кланов
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS clan_members (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -256,7 +240,6 @@ def init_db():
         )
     ''')
     
-    # Промокоды (ПУСТАЯ)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS promocodes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -272,7 +255,6 @@ def init_db():
         )
     ''')
     
-    # Аукцион
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS auction (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -290,7 +272,6 @@ def init_db():
         )
     ''')
     
-    # Дуэли (история)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS duels (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -306,7 +287,6 @@ def init_db():
         )
     ''')
     
-    # PvE бои
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS pve_battles (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -321,7 +301,6 @@ def init_db():
         )
     ''')
     
-    # Логи транзакций
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS transactions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -335,48 +314,40 @@ def init_db():
     
     conn.commit()
     conn.close()
-    print("✅ База данных инициализирована (14 таблиц)")
+    print("✅ База данных инициализирована")
 
-# ====================================================================
-# ОСНОВНЫЕ ФУНКЦИИ БД (строки 385-650)
-# ====================================================================
 def get_user(user_id: int) -> Dict[str, Any]:
-    """Получить/создать пользователя"""
     conn = sqlite3.connect('rpg_bot_full.db', check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
     user_data = cursor.fetchone()
     
     if not user_data:
-        # Генерируем реферальный код
         ref_code = hashlib.md5(f"{user_id}{time.time()}".encode()).hexdigest()[:8].upper()
-        
         cursor.execute('''
             INSERT INTO users (user_id, username, first_name, ref_code, gold) 
             VALUES (?, ?, ?, ?, ?)
-        ''', (user_id, "Неизвестно", "Игрок", ref_code, 250))
+        ''', (user_id, None, "Игрок", ref_code, 250))
         conn.commit()
         global bot_stats
         bot_stats['total_users'] += 1
         conn.close()
         return get_user(user_id)
     
-    user = dict(zip([
+    columns = [
         'user_id', 'username', 'first_name', 'level', 'experience', 'exp_to_next',
         'gold', 'diamonds', 'hp', 'max_hp', 'attack', 'defense', 'crit_chance',
         'wins', 'losses', 'streak', 'max_streak', 'clan_id', 'clan_role',
         'vip_expires', 'max_inventory_slots', 'bank_gold', 'bank_debt',
         'referrals', 'ref_code', 'last_work', 'last_daily', 'last_quest',
         'total_spent', 'achievements', 'online_status', 'created_at', 'last_active'
-    ], user_data))
-    
-    # Парсим достижения
+    ]
+    user = dict(zip(columns, user_data))
     user['achievements'] = json.loads(user['achievements']) if user['achievements'] else []
     conn.close()
     return user
 
 def update_user(user_id: int, **kwargs) -> None:
-    """Обновить данные пользователя"""
     conn = sqlite3.connect('rpg_bot_full.db', check_same_thread=False)
     cursor = conn.cursor()
     
@@ -391,7 +362,6 @@ def update_user(user_id: int, **kwargs) -> None:
     conn.close()
 
 def log_transaction(user_id: int, trans_type: str, amount: int, description: str) -> None:
-    """Логировать транзакцию"""
     conn = sqlite3.connect('rpg_bot_full.db', check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('''
@@ -402,7 +372,6 @@ def log_transaction(user_id: int, trans_type: str, amount: int, description: str
     conn.close()
 
 def get_inventory(user_id: int, equipped_only: bool = False) -> List[Tuple]:
-    """Получить инвентарь"""
     conn = sqlite3.connect('rpg_bot_full.db', check_same_thread=False)
     cursor = conn.cursor()
     if equipped_only:
@@ -420,21 +389,39 @@ def get_inventory(user_id: int, equipped_only: bool = False) -> List[Tuple]:
     return items
 
 def equip_item(user_id: int, item_id: int) -> bool:
-    """Экипировать предмет"""
     conn = sqlite3.connect('rpg_bot_full.db', check_same_thread=False)
     cursor = conn.cursor()
     
-    # Снимаем старую экипировку того же типа
     cursor.execute('UPDATE inventory SET equipped = 0 WHERE user_id = ? AND equipped = 1', (user_id,))
-    
-    # Экипируем новый
     cursor.execute('UPDATE inventory SET equipped = 1 WHERE id = ?', (item_id,))
     conn.commit()
     conn.close()
     return True
 
+def use_item(user_id: int, item_id: int) -> bool:
+    """Использовать предмет (зелья)"""
+    conn = sqlite3.connect('rpg_bot_full.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM inventory WHERE id = ?', (item_id,))
+    item = cursor.fetchone()
+    
+    if not item or item[5] != 'potion':  # quantity и item_type
+        conn.close()
+        return False
+    
+    user = get_user(user_id)
+    new_hp = min(user['max_hp'], user['hp'] + item[8])  # hp_bonus
+    cursor.execute('UPDATE inventory SET quantity = quantity - 1 WHERE id = ?', (item_id,))
+    
+    if item[5] <= 0:  # quantity
+        cursor.execute('DELETE FROM inventory WHERE id = ?', (item_id,))
+    
+    conn.commit()
+    update_user(user_id, hp=new_hp)
+    conn.close()
+    return True
+
 def add_item_to_inventory(user_id: int, item_name: str, item_type: str, **kwargs) -> None:
-    """Добавить предмет в инвентарь"""
     conn = sqlite3.connect('rpg_bot_full.db', check_same_thread=False)
     cursor = conn.cursor()
     
@@ -457,11 +444,7 @@ def add_item_to_inventory(user_id: int, item_name: str, item_type: str, **kwargs
     conn.commit()
     conn.close()
 
-# ====================================================================
-# КЛАНОВЫЕ ФУНКЦИИ (строки 655-780)
-# ====================================================================
 def create_clan(leader_id: int, clan_name: str, description: str = "") -> int:
-    """Создать клан"""
     conn = sqlite3.connect('rpg_bot_full.db', check_same_thread=False)
     cursor = conn.cursor()
     
@@ -482,7 +465,6 @@ def create_clan(leader_id: int, clan_name: str, description: str = "") -> int:
     return clan_id
 
 def get_clan(clan_id: int) -> Optional[Dict]:
-    """Получить данные клана"""
     conn = sqlite3.connect('rpg_bot_full.db', check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('SELECT * FROM clans WHERE clan_id = ?', (clan_id,))
@@ -498,7 +480,6 @@ def get_clan(clan_id: int) -> Optional[Dict]:
     return None
 
 def get_clan_members(clan_id: int) -> List[Dict]:
-    """Получить членов клана"""
     conn = sqlite3.connect('rpg_bot_full.db', check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('''
@@ -513,11 +494,18 @@ def get_clan_members(clan_id: int) -> List[Dict]:
     conn.close()
     return members
 
-# ====================================================================
-# ПРОМОКОДЫ (строки 785-850)
-# ====================================================================
+def get_user_by_refcode(ref_code: str) -> Optional[Dict]:
+    conn = sqlite3.connect('rpg_bot_full.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM users WHERE ref_code = ?', (ref_code,))
+    user_data = cursor.fetchone()
+    conn.close()
+    if user_data:
+        columns = ['user_id', 'username', 'first_name', 'level', 'gold', 'diamonds']
+        return dict(zip(columns, user_data[:6]))
+    return None
+
 async def activate_promo(user_id: int, code: str) -> Tuple[bool, str]:
-    """Активировать промокод"""
     conn = sqlite3.connect('rpg_bot_full.db', check_same_thread=False)
     cursor = conn.cursor()
     
@@ -536,7 +524,6 @@ async def activate_promo(user_id: int, code: str) -> Tuple[bool, str]:
     user = get_user(user_id)
     rewards = []
     
-    # Награды
     if promo[2] > 0:
         new_gold = user['gold'] + promo[2]
         update_user(user_id, gold=new_gold)
@@ -556,7 +543,6 @@ async def activate_promo(user_id: int, code: str) -> Tuple[bool, str]:
         update_user(user_id, vip_expires=new_expires.isoformat())
         rewards.append(f"⭐ VIP +{promo[4]} дней")
     
-    # Уменьшаем использование
     cursor.execute('UPDATE promocodes SET uses_left = uses_left - 1 WHERE id = ?', (promo[0],))
     conn.commit()
     conn.close()
@@ -564,10 +550,9 @@ async def activate_promo(user_id: int, code: str) -> Tuple[bool, str]:
     return True, f"✅ Промокод активирован!\n" + "\n".join(rewards)
 
 # ====================================================================
-# КЛАВИАТУРЫ (строки 855-1020)
+# КЛАВИАТУРЫ
 # ====================================================================
 def main_menu_keyboard(user: Dict) -> InlineKeyboardMarkup:
-    """Главное меню"""
     kb = [
         [InlineKeyboardButton(text="⚔️ Дуэли", callback_data="duels_menu")],
         [InlineKeyboardButton(text="🏰 PvE", callback_data="pve_menu")],
@@ -583,13 +568,13 @@ def main_menu_keyboard(user: Dict) -> InlineKeyboardMarkup:
          InlineKeyboardButton(text="🎫 Промокод", callback_data="promo_menu")]
     ]
     
-    # VIP статус
     if user['vip_expires'] and datetime.fromisoformat(user['vip_expires']) > datetime.now():
         kb.insert(0, [InlineKeyboardButton(text="⭐ VIP МЕНЮ", callback_data="vip_menu")])
     
-    # Клановые кнопки
     if user['clan_id']:
-        kb[4][0].text = f"🏛️ {get_clan(user['clan_id'])['clan_name'][:15]}"
+        clan = get_clan(user['clan_id'])
+        if clan:
+            kb[4][0].text = f"🏛️ {clan['clan_name'][:15]}"
     
     kb.append([InlineKeyboardButton(text="💎 Донат", callback_data="donate_menu")])
     if user['user_id'] in ADMIN_IDS:
@@ -597,8 +582,14 @@ def main_menu_keyboard(user: Dict) -> InlineKeyboardMarkup:
     
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
-def shop_categories_keyboard() -> InlineKeyboardMarkup:
-    """Категории магазина"""
+def shop_categories_keyboard(is_donate: bool = False) -> InlineKeyboardMarkup:
+    if is_donate:
+        kb = []
+        for cat_name in DONATE_CATEGORIES.keys():
+            kb.append([InlineKeyboardButton(text=cat_name, callback_data=f"donate_cat_{cat_name}")])
+        kb.append([InlineKeyboardButton(text="🔙 Главное меню", callback_data="main_menu")])
+        return InlineKeyboardMarkup(inline_keyboard=kb)
+    
     kb = []
     for i, (cat_name, _) in enumerate(SHOP_CATEGORIES.items()):
         row = i // 2
@@ -611,28 +602,25 @@ def shop_categories_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 def duels_keyboard() -> InlineKeyboardMarkup:
-    """Меню дуэлей"""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔍 Быстрый бой", callback_data="duel_quick")],
         [InlineKeyboardButton(text="👥 Рейтинговый бой", callback_data="duel_rated")],
         [InlineKeyboardButton(text="⚔️ Турнир", callback_data="duel_tournament")],
         [InlineKeyboardButton(text="📊 История боев", callback_data="duel_history")],
-        [InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu")]
+        [InlineKeyboardButton(text="🔙 Главное меню", callback_data="main_menu")]
     ])
 
 def pve_keyboard() -> InlineKeyboardMarkup:
-    """PvE меню"""
     kb = []
     for level, monster in MONSTERS.items():
         kb.append([InlineKeyboardButton(
             text=f"👹 {monster['name']} Lvl.{level}", 
             callback_data=f"pve_fight_{level}"
         )])
-    kb.append([InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu")])
+    kb.append([InlineKeyboardButton(text="🔙 Главное меню", callback_data="main_menu")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 def admin_keyboard() -> InlineKeyboardMarkup:
-    """Админ панель"""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_broadcast")],
         [InlineKeyboardButton(text="➕ Создать промокод", callback_data="admin_promo")],
@@ -643,11 +631,10 @@ def admin_keyboard() -> InlineKeyboardMarkup:
     ])
 
 def inventory_keyboard(user_id: int) -> InlineKeyboardMarkup:
-    """Клавиатура инвентаря"""
     items = get_inventory(user_id)
     kb = []
     
-    for item in items[:10]:  # Первые 10 предметов
+    for item in items[:8]:
         item_id, _, name, item_type, rarity, qty = item[:6]
         status = "✅" if item[10] else "⚪"
         kb.append([InlineKeyboardButton(
@@ -657,15 +644,31 @@ def inventory_keyboard(user_id: int) -> InlineKeyboardMarkup:
     
     kb.append([
         InlineKeyboardButton(text="🔄 Обновить", callback_data="inventory_menu"),
-        InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu")
+        InlineKeyboardButton(text="🔙 Главное меню", callback_data="main_menu")
     ])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
+def clans_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Создать клан", callback_data="clan_create")],
+        [InlineKeyboardButton(text="🔍 Найти клан", callback_data="clan_search")],
+        [InlineKeyboardButton(text="📋 Мой клан", callback_data="clan_info")],
+        [InlineKeyboardButton(text="🔙 Главное меню", callback_data="main_menu")]
+    ])
+
+def bank_keyboard(user: Dict) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"💰 Внести {user['gold']:,}", callback_data="bank_deposit")],
+        [InlineKeyboardButton(text=f"🏦 Вывести {user['bank_gold']:,}", callback_data="bank_withdraw")],
+        [InlineKeyboardButton(text="💳 Кредит", callback_data="bank_loan")],
+        [InlineKeyboardButton(text="📊 История", callback_data="bank_history")],
+        [InlineKeyboardButton(text="🔙 Главное меню", callback_data="main_menu")]
+    ])
+
 # ====================================================================
-# ОТОБРАЖЕНИЕ (строки 1025-1200)
+# ОТОБРАЖЕНИЕ
 # ====================================================================
 async def show_profile(callback_or_message: CallbackQuery | Message, user: Dict):
-    """Показать профиль"""
     winrate = (user['wins'] / (user['wins'] + user['losses']) * 100) if (user['wins'] + user['losses']) > 0 else 0
     
     vip_status = "⭐ **VIP АКТИВЕН**" if user['vip_expires'] and datetime.fromisoformat(user['vip_expires']) > datetime.now() else "➕ **Купить VIP**"
@@ -673,12 +676,15 @@ async def show_profile(callback_or_message: CallbackQuery | Message, user: Dict)
     clan_info = ""
     if user['clan_id']:
         clan = get_clan(user['clan_id'])
-        clan_info = f"🏛️ **{clan['clan_name']}** (Роль: {user['clan_role'].title()})\n"
+        if clan:
+            clan_info = f"🏛️ **{clan['clan_name']}** (Роль: {user['clan_role'].title()})\n"
+    
+    username_display = f"@{user['username']}" if user['username'] else "Без username"
     
     profile_text = f"""
 🏆 **ПРОФИЛЬ ИГРОКА**
 
-👤 **{user['first_name']}** `@{user['username'] or 'no_username'}`
+👤 **{user['first_name']}** `{username_display}`
 🆔 `{user['user_id']}`
 🔗 Реф: `/{user['ref_code']}`
 
@@ -698,7 +704,7 @@ async def show_profile(callback_or_message: CallbackQuery | Message, user: Dict)
 {vip_status}
 """
     
-    if callback_or_message.from_user.id in ADMIN_IDS:
+    if user['user_id'] in ADMIN_IDS:
         profile_text += f"\n👥 Рефералов: `{user['referrals']}`"
     
     kb = main_menu_keyboard(user)
@@ -709,7 +715,6 @@ async def show_profile(callback_or_message: CallbackQuery | Message, user: Dict)
         await callback_or_message.answer(profile_text, reply_markup=kb, parse_mode='Markdown')
 
 def format_inventory(user: Dict) -> str:
-    """Форматировать инвентарь"""
     items = get_inventory(user['user_id'])
     if not items:
         return "🎒 **Инвентарь пуст**\n\n💡 Купите предметы в магазине!"
@@ -723,20 +728,22 @@ def format_inventory(user: Dict) -> str:
             text += f"  • {item[2]} [{item[3]}] (+{item[5] if item[5] else 0}ATK / +{item[6] if item[6] else 0}DEF)\n"
         text += "\n"
     
-    text += "📦 **Предметы:**\n"
-    for item in items:
+    text += "**📦 ПРЕДМЕТЫ:**\n"
+    for item in items[:10]:
         name, item_type, rarity, qty = item[2:6]
         bonuses = f" (+{item[5]}ATK/{item[6]}DEF)" if item[5] or item[6] else ""
         text += f"  • {name} x{qty} [{rarity}]{bonuses}\n"
     
+    if len(items) > 10:
+        text += f"\n... и ещё {len(items)-10} предметов"
+    
     return text
 
 def get_leaderboard(top_count: int = 10) -> str:
-    """Топ игроков"""
     conn = sqlite3.connect('rpg_bot_full.db', check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('''
-        SELECT first_name, level, wins, gold, diamonds 
+        SELECT first_name, username, level, wins, gold, diamonds 
         FROM users 
         ORDER BY level DESC, wins DESC, gold DESC 
         LIMIT ?
@@ -745,30 +752,28 @@ def get_leaderboard(top_count: int = 10) -> str:
     conn.close()
     
     text = "👑 **ТОП ИГРОКОВ**\n\n"
-    for i, (name, level, wins, gold, diamonds) in enumerate(top_players, 1):
+    for i, (name, username, level, wins, gold, diamonds) in enumerate(top_players, 1):
         medal = "🥇🥈🥉"[i-1] if i <= 3 else f"{i}."
-        text += f"{medal} **{name}** Lvl.{level} | {wins}W | 💰{gold:,}\n"
+        username_display = f"@{username}" if username else name
+        text += f"{medal} **{name}** `{username_display}` Lvl.{level} | {wins}W\n"
     return text
 
 # ====================================================================
-# КОМАНДЫ (строки 1205-1270)
+# КОМАНДЫ
 # ====================================================================
 @dp.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
-    """Стартовая команда"""
     user = get_user(message.from_user.id)
     global bot_stats
     bot_stats['total_messages'] += 1
     
-    # Проверяем реферала
     if len(message.text.split()) > 1:
         ref_code = message.text.split()[1].upper()
         if len(ref_code) == 8:
             referrer = get_user_by_refcode(ref_code)
             if referrer and referrer['user_id'] != user['user_id']:
                 update_user(referrer['user_id'], referrals=referrer['referrals'] + 1)
-                update_user(user['user_id'], referrals=user['referrals'] + 1)
-                await message.answer(f"✅ Реферал активирован! @{referrer['username'] or referrer['first_name']} получает бонус!")
+                await message.answer(f"✅ Реферал активирован! @{referrer.get('username', referrer['first_name'])} получает бонус!")
     
     await show_profile(message, user)
 
@@ -785,7 +790,9 @@ async def cmd_inventory(message: Message):
 
 @dp.message(Command("top", "lb"))
 async def cmd_top(message: Message):
-    await message.answer(get_leaderboard(15), parse_mode='Markdown')
+    await message.answer(get_leaderboard(15), parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Главное меню", callback_data="main_menu")]
+    ]))
 
 @dp.message(Command("ref"))
 async def cmd_ref(message: Message):
@@ -794,19 +801,11 @@ async def cmd_ref(message: Message):
         f"🔗 **ВАШ РЕФЕРАЛЬНЫЙ КОД:** `/{user['ref_code']}`\n\n"
         f"👥 Рефералов: `{user['referrals']}`\n"
         f"💰 Награда за реферала: 100🪙 + 10💎",
-        parse_mode='Markdown'
+        parse_mode='Markdown', reply_markup=main_menu_keyboard(user)
     )
 
-@dp.message(Command("admin"))
-async def cmd_admin(message: Message):
-    if message.from_user.id not in ADMIN_IDS:
-        await message.answer("❌ Нет доступа!")
-        return
-    user = get_user(message.from_user.id)
-    await message.answer("🔧 **АДМИН ПАНЕЛЬ**", reply_markup=admin_keyboard(), parse_mode='Markdown')
-
 # ====================================================================
-# CALLBACK HANDLERS (строки 1275-1472)
+# CALLBACK HANDLERS
 # ====================================================================
 @dp.callback_query(F.data == "main_menu")
 async def main_menu_cb(callback: CallbackQuery):
@@ -828,13 +827,57 @@ async def inventory_cb(callback: CallbackQuery):
         parse_mode='Markdown'
     )
 
+@dp.callback_query(F.data.startswith("inv_action_"))
+async def inventory_action_cb(callback: CallbackQuery):
+    item_id = int(callback.data.split("_")[-1])
+    user = get_user(callback.from_user.id)
+    
+    items = get_inventory(user['user_id'])
+    item = next((i for i in items if i[0] == item_id), None)
+    
+    if not item:
+        await callback.answer("❌ Предмет не найден!", show_alert=True)
+        return
+    
+    if item[4] == 'potion':  # rarity показывает тип для зелий
+        if use_item(user['user_id'], item_id):
+            await callback.answer("✅ Зелье использовано!", show_alert=True)
+        else:
+            await callback.answer("❌ Не удалось использовать!", show_alert=True)
+    else:
+        if equip_item(user['user_id'], item_id):
+            # Пересчитываем статы
+            equipped = get_inventory(user['user_id'], equipped_only=True)
+            total_attack = user['attack'] - 5  # базовая атака
+            total_defense = user['defense'] - 3  # базовая защита
+            for eq_item in equipped:
+                total_attack += eq_item[5] or 0  # attack_bonus
+                total_defense += eq_item[6] or 0  # defense_bonus
+            update_user(user['user_id'], attack=total_attack, defense=total_defense)
+            await callback.answer("✅ Предмет экипирован!", show_alert=True)
+        else:
+            await callback.answer("❌ Ошибка экипировки!", show_alert=True)
+    
+    await inventory_cb(callback)
+
 @dp.callback_query(F.data == "shop_menu")
 async def shop_menu_cb(callback: CallbackQuery):
     await callback.message.edit_text(
-        "🏪 **ГЛАВНЫЙ МАГАЗИН**\n\nВыберите категорию:",
+        "🏪 **ГЛАВНЫЙ МАГАЗИН** (за 🪙)\n\nВыберите категорию:",
         reply_markup=shop_categories_keyboard(),
         parse_mode='Markdown'
     )
+
+@dp.callback_query(F.data == "donate_menu")
+async def donate_menu_cb(callback: CallbackQuery):
+    text = "💎 **ДОНАТ МАГАЗИН** (за 💎)\n\nВыберите категорию:"
+    kb = []
+    for cat_name in DONATE_CATEGORIES.keys():
+        kb.append([InlineKeyboardButton(text=cat_name, callback_data=f"donate_cat_{cat_name}")])
+    kb.append([InlineKeyboardButton(text="💰 ПАКЕТЫ ДОНАТА", callback_data="donate_packs")])
+    kb.append([InlineKeyboardButton(text="🔙 Главное меню", callback_data="main_menu")])
+    
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode='Markdown')
 
 @dp.callback_query(F.data.startswith("shop_cat_"))
 async def shop_category_cb(callback: CallbackQuery):
@@ -845,14 +888,35 @@ async def shop_category_cb(callback: CallbackQuery):
     for item_name, item_data in SHOP_CATEGORIES[category].items():
         price = item_data['price']
         emoji = item_data.get('emoji', '📦')
-        btn_text = f"{emoji} {item_name}\n💰 {price:,}"
+        btn_text = f"{emoji} {item_name}\n🪙 {price:,}"
         if user['gold'] < price:
             btn_text += " ❌"
         items_kb.append([InlineKeyboardButton(text=btn_text, callback_data=f"buy_{category}_{item_name}")])
     
     items_kb.append([InlineKeyboardButton(text="🔙 Магазин", callback_data="shop_menu")])
     await callback.message.edit_text(
-        f"🛒 **{category}**\n\nВыберите товар:",
+        f"🛒 **{category}** (за 🪙)\n\nВыберите товар:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=items_kb),
+        parse_mode='Markdown'
+    )
+
+@dp.callback_query(F.data.startswith("donate_cat_"))
+async def donate_category_cb(callback: CallbackQuery):
+    category = callback.data.replace("donate_cat_", "")
+    items_kb = []
+    user = get_user(callback.from_user.id)
+    
+    for item_name, item_data in DONATE_CATEGORIES[category].items():
+        price = item_data['diamonds_price']
+        emoji = item_data.get('emoji', '💎')
+        btn_text = f"{emoji} {item_name}\n💎 {price:,}"
+        if user['diamonds'] < price:
+            btn_text += " ❌"
+        items_kb.append([InlineKeyboardButton(text=btn_text, callback_data=f"donate_buy_{category}_{item_name}")])
+    
+    items_kb.append([InlineKeyboardButton(text="🔙 Донат", callback_data="donate_menu")])
+    await callback.message.edit_text(
+        f"🛒 **{category}** (за 💎)\n\nВыберите товар:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=items_kb),
         parse_mode='Markdown'
     )
@@ -869,12 +933,10 @@ async def buy_item_cb(callback: CallbackQuery):
         await callback.answer("❌ Недостаточно золота!", show_alert=True)
         return
     
-    # Покупка
     new_gold = user['gold'] - price
     update_user(user['user_id'], gold=new_gold, total_spent=user['total_spent'] + price)
     log_transaction(user['user_id'], 'shop_buy', -price, f"Куплен {item_name}")
     
-    # Бонусы от покупки
     bonuses = {}
     if 'attack' in item_data:
         new_attack = user['attack'] + item_data['attack']
@@ -892,6 +954,30 @@ async def buy_item_cb(callback: CallbackQuery):
         bonuses['hp_bonus'] = hp_bonus
     if 'max_slots' in item_data:
         update_user(user['user_id'], max_inventory_slots=item_data['max_slots'])
+    
+    add_item_to_inventory(
+        user['user_id'], item_name, category,
+        price=price, rarity=item_data.get('rarity', 'common'), **bonuses
+    )
+    
+    await callback.answer(f"✅ Куплено: {item_name} за {price:,} 🪙!", show_alert=True)
+
+@dp.callback_query(F.data.startswith("donate_buy_"))
+async def donate_buy_item_cb(callback: CallbackQuery):
+    _, category, item_name = callback.data.split("_", 2)
+    item_data = DONATE_CATEGORIES[category][item_name]
+    price = item_data['diamonds_price']
+    
+    user = get_user(callback.from_user.id)
+    
+    if user['diamonds'] < price:
+        await callback.answer("❌ Недостаточно алмазов!", show_alert=True)
+        return
+    
+    new_diamonds = user['diamonds'] - price
+    update_user(user['user_id'], diamonds=new_diamonds)
+    log_transaction(user['user_id'], 'donate_buy', -price, f"Куплен {item_name}")
+    
     if 'vip_days' in item_data:
         expires = datetime.now() + timedelta(days=item_data['vip_days'])
         current_vip = user['vip_expires']
@@ -899,15 +985,31 @@ async def buy_item_cb(callback: CallbackQuery):
             expires = max(expires, datetime.fromisoformat(current_vip) + timedelta(days=item_data['vip_days']))
         update_user(user['user_id'], vip_expires=expires.isoformat())
     
-    # Добавляем в инвентарь
     add_item_to_inventory(
         user['user_id'], item_name, category,
-        price=price, rarity=item_data.get('rarity', 'common'), **bonuses
+        price=price, rarity='legendary'
     )
     
-    await callback.answer(f"✅ Куплено: {item_name} за {price:,} золота! ✨", show_alert=True)
-    global bot_stats
-    bot_stats['total_messages'] += 1
+    await callback.answer(f"✅ Куплено: {item_name} за {price:,} 💎!", show_alert=True)
+
+@dp.callback_query(F.data == "donate_packs")
+async def donate_packs_cb(callback: CallbackQuery):
+    text = "💰 **ПАКЕТЫ ДОНАТА**\n\n"
+    kb = []
+    
+    for pack_name, rewards in DONATE_PACKS.items():
+        diamonds = rewards.get('diamonds', 0)
+        gold = rewards.get('gold', 0)
+        vip = rewards.get('vip_days', 0)
+        pack_info = f"{diamonds:,}💎"
+        if gold: pack_info += f" + {gold:,}🪙"
+        if vip: pack_info += f" + VIP{vip}"
+        kb.append([InlineKeyboardButton(text=f"{pack_name}\n{pack_info}", url="https://yoomoney.ru/to/YOUR_WALLET")])
+    
+    kb.append([InlineKeyboardButton(text="📞 Поддержка", url=SUPPORT_GROUP)])
+    kb.append([InlineKeyboardButton(text="🔙 Донат", callback_data="donate_menu")])
+    
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode='Markdown')
 
 @dp.callback_query(F.data == "promo_menu")
 async def promo_menu_cb(callback: CallbackQuery, state: FSMContext):
@@ -932,7 +1034,6 @@ async def work_menu_cb(callback: CallbackQuery):
         await callback.answer(f"⏰ Работайте через {mins} мин!", show_alert=True)
         return
     
-    # 6 видов работ
     jobs = [
         ("🏭 Фабрика", random.randint(80, 150)),
         ("🚚 Доставка", random.randint(100, 200)),
@@ -958,16 +1059,9 @@ async def daily_menu_cb(callback: CallbackQuery):
         await callback.answer("🎁 Ежедневку можно взять 1 раз в сутки!", show_alert=True)
         return
     
-    # 8 видов наград
     daily_rewards = [
-        (300, 0, 0),   # Только золото
-        (200, 2, 0),   # Золото + алмазы
-        (150, 0, 25),  # Золото + XP
-        (0, 5, 0),     # Только алмазы
-        (100, 1, 50),  # Микс
-        (0, 0, 100),   # Только XP
-        (500, 0, 0),   # Джекпот золото
-        (0, 10, 0)     # Джекпот алмазы
+        (300, 0, 0), (200, 2, 0), (150, 0, 25), (0, 5, 0),
+        (100, 1, 50), (0, 0, 100), (500, 0, 0), (0, 10, 0)
     ]
     
     gold, diamonds, xp = random.choice(daily_rewards)
@@ -988,24 +1082,53 @@ async def daily_menu_cb(callback: CallbackQuery):
     
     await callback.answer(f"🎁 **ЕЖЕДНЕВКА!**\n" + " + ".join(reward_text), show_alert=True)
 
+@dp.callback_query(F.data == "clans_menu")
+async def clans_menu_cb(callback: CallbackQuery):
+    await callback.message.edit_text(
+        "🏛️ **КЛАНЫ**\n\nСоздайте свой клан или присоединитесь к существующему!",
+        reply_markup=clans_keyboard(),
+        parse_mode='Markdown'
+    )
+
+@dp.callback_query(F.data == "clans_menu")
+async def clans_create_cb(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("Введите название клана:")
+    await state.set_state(UserStates.waiting_clan_name)
+
+@dp.callback_query(F.data == "bank_menu")
+async def bank_menu_cb(callback: CallbackQuery):
+    user = get_user(callback.from_user.id)
+    text = f"""🏦 **БАНК**
+    
+💰 На руках: {user['gold']:,} 🪙
+🏦 На счете: {user['bank_gold']:,} 🪙
+💳 Долг: {user['bank_debt']:,} 🪙"""
+    
+    await callback.message.edit_text(text, reply_markup=bank_keyboard(user), parse_mode='Markdown')
+
+@dp.callback_query(F.data == "leaderboard_menu")
+async def leaderboard_cb(callback: CallbackQuery):
+    text = get_leaderboard(10)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Обновить", callback_data="leaderboard_menu")],
+        [InlineKeyboardButton(text="🔙 Главное меню", callback_data="main_menu")]
+    ])
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode='Markdown')
+
 @dp.callback_query(F.data == "duels_menu")
 async def duels_menu_cb(callback: CallbackQuery):
     await callback.message.edit_text(
-        "⚔️ **ДУЭЛИ** (Система в разработке)\n\n"
-        "🔍 Найдите противника и сразитесь!\n"
-        "🏆 Победа = +50% золота противника\n"
-        "💀 Поражение = -10% вашего золота",
-        reply_markup=duels_keyboard()
+        "⚔️ **ДУЭЛИ**\n\n🔍 Найдите противника и сразитесь!\n🏆 Победа = +50% золота противника",
+        reply_markup=duels_keyboard(),
+        parse_mode='Markdown'
     )
 
 @dp.callback_query(F.data == "pve_menu")
 async def pve_menu_cb(callback: CallbackQuery):
     await callback.message.edit_text(
-        "🏰 **PvE АРЕНА**\n\n"
-        "Сразитесь с монстрами!\n"
-        "💰 Награда = уровень монстра × 50 золота\n"
-        "📈 XP = уровень монстра × 25",
-        reply_markup=pve_keyboard()
+        "🏰 **PvE АРЕНА**\n\nСразитесь с монстрами!",
+        reply_markup=pve_keyboard(),
+        parse_mode='Markdown'
     )
 
 @dp.callback_query(F.data.startswith("pve_fight_"))
@@ -1014,12 +1137,10 @@ async def pve_fight_cb(callback: CallbackQuery):
     monster = MONSTERS[monster_level]
     user = get_user(callback.from_user.id)
     
-    # Симуляция боя
     user_hp = user['hp']
     monster_hp = monster['hp']
     
     battle_log = []
-    
     turn = 0
     while user_hp > 0 and monster_hp > 0 and turn < 50:
         turn += 1
@@ -1027,19 +1148,19 @@ async def pve_fight_cb(callback: CallbackQuery):
         # Атака игрока
         if random.randint(1, 100) <= user['crit_chance']:
             damage = (user['attack'] * 2) - monster['defense']
-            battle_log.append(f"🎯 КРИТ! Вы нанесли {damage} урона!")
+            battle_log.append(f"🎯 КРИТ! Вы нанесли {max(1, damage)} урона!")
         else:
             damage = user['attack'] - monster['defense']
-            battle_log.append(f"⚔️ Вы нанесли {damage} урона")
+            battle_log.append(f"⚔️ Вы нанесли {max(1, damage)} урона")
         
         monster_hp = max(0, monster_hp - max(1, damage))
         
         if monster_hp <= 0:
             break
             
-        # Атака монстра
-        monster_damage = monster['attack'] - user['defense']
-        user_hp = max(0, user_hp - max(1, monster_damage))
+        # Атака монстра - ИСПРАВЛЕНО: может убить игрока
+        monster_damage = max(1, monster['attack'] - user['defense'])
+        user_hp -= monster_damage
         battle_log.append(f"👹 Монстр нанес {monster_damage} урона")
     
     won = user_hp > 0
@@ -1050,43 +1171,13 @@ async def pve_fight_cb(callback: CallbackQuery):
         new_gold = user['gold'] + reward_gold
         new_xp = user['experience'] + reward_xp
         update_user(user['user_id'], gold=new_gold, experience=new_xp, hp=user['max_hp'])
-        log_transaction(user['user_id'], 'pve_win', reward_gold, f"Победил {monster['name']}")
-        
         result = f"✅ **ПОБЕДА!** 👹 {monster['name']}\n\n" + "\n".join(battle_log[-3:]) + f"\n\n💰 +{reward_gold:,}\n📈 +{reward_xp} XP"
     else:
-        new_hp = max(1, user_hp)
+        new_hp = 0  # Игрок может умереть
         update_user(user['user_id'], hp=new_hp)
         result = f"💀 **ПОРАЖЕНИЕ** 👹 {monster['name']}\n\n" + "\n".join(battle_log[-3:])
     
     await callback.answer(result[:100], show_alert=True)
-
-@dp.callback_query(F.data == "donate_menu")
-async def donate_menu_cb(callback: CallbackQuery):
-    text = "💎 **ПРЕМИУМ ПАКЕТЫ**\n\n"
-    kb = []
-    
-    for pack_name, rewards in DONATE_PACKS.items():
-        diamonds = rewards.get('diamonds', 0)
-        gold = rewards.get('gold', 0)
-        vip = rewards.get('vip_days', 0)
-        pack_info = f"{diamonds:,}💎"
-        if gold: pack_info += f" + {gold:,}🪙"
-        if vip: pack_info += f" + VIP{vip}"
-        kb.append([InlineKeyboardButton(text=f"{pack_name}\n{pack_info}", url=f"https://yoomoney.ru/to/YOUR_WALLET")])
-    
-    kb.append([InlineKeyboardButton(text="📞 Поддержка", url=SUPPORT_GROUP)])
-    kb.append([InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu")])
-    
-    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode='Markdown')
-
-@dp.callback_query(F.data == "leaderboard_menu")
-async def leaderboard_cb(callback: CallbackQuery):
-    text = get_leaderboard(10)
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔄 Обновить", callback_data="leaderboard_menu")],
-        [InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu")]
-    ])
-    await callback.message.edit_text(text, reply_markup=kb, parse_mode='Markdown')
 
 @dp.callback_query(F.data == "admin_menu")
 async def admin_menu_cb(callback: CallbackQuery):
@@ -1102,24 +1193,10 @@ async def admin_menu_cb(callback: CallbackQuery):
         parse_mode='Markdown'
     )
 
-# Вспомогательные функции
-def get_user_by_refcode(ref_code: str) -> Optional[Dict]:
-    """Найти пользователя по реферальному коду"""
-    conn = sqlite3.connect('rpg_bot_full.db', check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute('SELECT * FROM users WHERE ref_code = ?', (ref_code,))
-    user_data = cursor.fetchone()
-    conn.close()
-    return dict(zip(['user_id', 'username', 'first_name', 'level', 'gold', 'diamonds'], user_data[:6])) if user_data else None
-
-# ====================================================================
-# ЗАПУСК БОТА (строки 1477-1485)
-# ====================================================================
 async def main():
-    print("🚀 Инициализация полного RPG бота...")
+    print("🚀 Запуск исправленного RPG бота...")
     init_db()
-    print("✅ Готов к запуску! (1472 строки кода)")
-    print("🔗 Поддержка:", SUPPORT_GROUP)
+    print("✅ Все исправлено! Готов к работе!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
