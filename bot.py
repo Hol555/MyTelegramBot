@@ -25,9 +25,9 @@ from aiogram.methods.send_message import SendMessage
 # НАСТРОЙКИ БОТА (строки 22-45)
 # ====================================================================
 logging.basicConfig(level=logging.INFO)
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"  # ← ЗАМЕНИТЕ НА СВОЙ ТОКЕН
-ADMIN_IDS = [123456789, 987654321]  # ← ЗАМЕНИТЕ НА ID АДМИНОВ
-SUPPORT_GROUP = "@your_support_group"  # Поддержка
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = list(map(int, os.getenv("ADMIN_IDS").split(",")))
+SUPPORT_GROUP = "@soblaznss"  # Поддержка
 
 bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
