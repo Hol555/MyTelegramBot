@@ -176,7 +176,6 @@ async def get_user(user_id: int) -> Dict[str, Any]:
                 return user_dict
             else:
                 now = datetime.now().isoformat()
-                # ИСПРАВЛЕННАЯ СТРОКА 595 - убрана лишняя }
                 await update_user(user_id, {'username': f"user_{user_id}"})
                 await db.execute("INSERT INTO users (user_id, username, created_at) VALUES (?, ?, ?)",
                                (user_id, f"user_{user_id}", now))
@@ -287,10 +286,9 @@ COOLDOWNS = {
 # КЛАВИАТУРЫ И ИНТЕРФЕЙСЫ
 # =====================================================
 
-def get_main_keyboard(user_id: int) -> ReplyKeyboardMarkup:
+async def get_main_keyboard(user_id: int) -> ReplyKeyboardMarkup:
     """Основная клавиатура с учетом VIP и админ статусов"""
-    loop = asyncio.get_event_loop()
-    user = loop.run_until_complete(get_user(user_id))
+    user = await get_user(user_id)
     is_vip = user['vip_until'] and datetime.fromisoformat(user['vip_until']) > datetime.now()
     is_admin = user_id == ADMIN_ID
     
@@ -322,6 +320,8 @@ async def show_profile(user_id: int):
     clan = await get_clan(user['clan_id']) if user['clan_id'] else None
     is_vip = user['vip_until'] and datetime.fromisoformat(user['vip_until']) > datetime.now()
     
+    bot_info = await bot.get_me()
+    
     vip_status = f"👑 <b>VIP до {user['vip_until'].strftime('%d.%m.%Y %H:%M')}</b>" if is_vip else "❌ Без VIP"
     clan_text = f"👥 <b>{clan['name']}</b> [{clan['logo_emoji']}]\n📊 Членов: <b>{clan['members']}</b>\n💰 Казна: <b>{clan['gold']:,}</b>" if clan else "👥 <i>Без клана</i>"
     
@@ -339,10 +339,20 @@ async def show_profile(user_id: int):
 
 <b>{vip_status}</b>
 
-🔗 <code>t.me/{(await bot.get_me()).username}?start={user_id}</code>"""
+🔗 <code>t.me/{bot_info.username}?start={user_id}</code>"""
     
-    kb = get_main_keyboard(user_id)
+    kb = await get_main_keyboard(user_id)
     await bot.send_message(user_id, text, reply_markup=kb, parse_mode='HTML')
+
+async def show_referral_link(user_id: int):
+    """Показать реферальную ссылку"""
+    bot_info = await bot.get_me()
+    user = await get_user(user_id)
+    await bot.send_message(
+        user_id, 
+        f"🔗 <b>ПРИГЛАСИ ДРУЗЕЙ!</b>\n<code>t.me/{bot_info.username}?start={user_id}</code>\n\n💰 <b>+250🥇</b> за каждого друга!\n👥 У тебя: <b>{user['referrals']}</b> рефералов", 
+        parse_mode='HTML'
+    )
 
 async def show_shop_full(msg_or_cb: Any, category: str = "🗡️ Оружие", page: int = 0):
     """Полноценный магазин с пагинацией"""
@@ -415,7 +425,7 @@ async def show_inventory_full(user_id: int):
             inv = await cursor.fetchone()
     
     if not inv:
-        await bot.send_message(user_id, "🎒 <b>Ваш инвентарь пуст!</b>\n🛒 Посетите магазин!", reply_markup=get_main_keyboard(user_id), parse_mode='HTML')
+        await bot.send_message(user_id, "🎒 <b>Ваш инвентарь пуст!</b>\n🛒 Посетите магазин!", reply_markup=await get_main_keyboard(user_id), parse_mode='HTML')
         return
     
     inv_dict = dict(zip(['user_id', 'items', 'equipped_weapon', 'equipped_armor', 'equipped_special', 'equipped_pet', 'total_items'], inv))
@@ -452,7 +462,7 @@ async def arena_search(user_id: int):
         await bot.send_message(
             user_id, 
             f"⚔️ <b>АРНА - ОЖИДАНИЕ</b>\n⏱️ <code>{int(remaining)}с</code> до следующего боя", 
-            reply_markup=get_main_keyboard(user_id), 
+            reply_markup=await get_main_keyboard(user_id), 
             parse_mode='HTML'
         )
         return
@@ -501,7 +511,7 @@ async def arena_search(user_id: int):
     await bot.send_message(
         user_id, 
         result, 
-        reply_markup=get_main_keyboard(user_id), 
+        reply_markup=await get_main_keyboard(user_id), 
         parse_mode='HTML'
     )
 
@@ -691,22 +701,22 @@ async def list_promocodes(admin_id: int) -> str:
     return text
 
 # =====================================================
-# ОБРАБОТЧИКИ КОМАНД И КНОПОК
+# ОБРАБОТЧИКИ КОМАНД И КНОПОК - ИСПРАВЛЕНЫ
 # =====================================================
 
 button_handlers = {
     "👤 Профиль": show_profile,
-    "📊 Статистика": show_profile,  # Пока дублируем
+    "📊 Статистика": show_profile,
     "🛒 Магазин": lambda m: asyncio.create_task(show_shop_full(m, "🗡️ Оружие", 0)),
     "🎒 Инвентарь": show_inventory_full,
     "⚔️ Арена": arena_search,
     "🏪 Донат Магазин": show_donate_shop,
     "💎 Промокоды": lambda uid: bot.send_message(uid, "💎 <b>Введите промокод:</b>\n<code>/promo КОД</code>\n\nИли просто: <code>КОД</code>", parse_mode='HTML'),
-    "🏰 Кланы": show_clan_menu_full,
-    "🔗 Рефералка": lambda uid: bot.send_message(uid, f"🔗 <b>ПРИГЛАСИ ДРУЗЕЙ!</b>\n<code>t.me/{(await bot.get_me()).username}?start={uid}</code>\n\n💰 <b>+250🥇</b> за каждого друга!\n👥 У тебя: <b>{(await get_user(uid))['referrals']}</b> рефералов", parse_mode='HTML'),
+    "🔗 Рефералка": show_referral_link,  # ✅ ИСПРАВЛЕНО: отдельная async функция
     "🔧 Админ Панель": admin_panel_full,
     "🏆 Достижения": lambda uid: bot.send_message(uid, "🏆 <b>Достижения в разработке!</b>", parse_mode='HTML'),
-    "⚙️ Настройки": lambda uid: bot.send_message(uid, "⚙️ <b>Настройки в разработке!</b>", parse_mode='HTML')
+    "⚙️ Настройки": lambda uid: bot.send_message(uid, "⚙️ <b>Настройки в разработке!</b>", parse_mode='HTML'),
+    "🏰 Кланы": show_clan_menu_full
 }
 
 # =====================================================
@@ -730,7 +740,7 @@ async def start_cmd(message: Message):
             await bot.send_message(
                 user_id, 
                 "🎉 <b>РЕФЕРАЛЬНЫЙ БОНУС!</b>\n💰 <b>+500🥇 +5💎</b>\nСпасибо за приглашение!", 
-                reply_markup=get_main_keyboard(user_id), 
+                reply_markup=await get_main_keyboard(user_id), 
                 parse_mode='HTML'
             )
             
@@ -749,7 +759,7 @@ async def start_cmd(message: Message):
 
 🎮 <b>Играйте и прокачивайтесь!</b>"""
     
-    await bot.send_message(user_id, welcome_text, reply_markup=get_main_keyboard(user_id), parse_mode='HTML')
+    await bot.send_message(user_id, welcome_text, reply_markup=await get_main_keyboard(user_id), parse_mode='HTML')
     await show_profile(user_id)
 
 @router.message()
@@ -763,7 +773,11 @@ async def handle_buttons(message: Message):
         return await bot.send_message(user_id, "🚫 <b>Вы заблокированы администратором!</b>", parse_mode='HTML')
     
     if text in button_handlers:
-        await button_handlers[text](user_id if 'user_id' in str(button_handlers[text]) else message)
+        handler = button_handlers[text]
+        if callable(handler) and asyncio.iscoroutinefunction(handler):
+            await handler(user_id)
+        else:
+            await handler(user_id)
     elif re.match(r'^[A-Z0-9]{3,12}$', text):  # Промокод
         result = await use_promocode(user_id, text)
         if result["success"]:
@@ -779,11 +793,11 @@ async def handle_buttons(message: Message):
                 f"🎉 <b>ПРОМОКОД АКТИВИРОВАН!</b>\n{', '.join(rewards_text)}\n\n"
                 f"📋 <code>{promo_info['code']}</code>\n⏰ Действует до: <b>{expires}</b>\n"
                 f"📊 Использовано: <b>{promo_info['used_count']}/{promo_info['max_uses']}</b>", 
-                reply_markup=get_main_keyboard(user_id), 
+                reply_markup=await get_main_keyboard(user_id), 
                 parse_mode='HTML'
             )
         else:
-            await message.reply(result["error"], reply_markup=get_main_keyboard(user_id))
+            await message.reply(result["error"], reply_markup=await get_main_keyboard(user_id))
     else:
         await show_profile(user_id)
 
@@ -925,6 +939,6 @@ if __name__ == "__main__":
     
     print("🔥 Запуск ULTIMATE RPG BOT v6.1 (950+ строк)")
     print("💎 Полная функциональность: магазин, кланы, промокоды, админка")
-    print("⚡ ИСПРАВЛЕНА строка 595 - f-string ошибка!")
+    print("⚡ ИСПРАВЛЕНА ошибка 'await outside async function'!")
     
     asyncio.run(main())
