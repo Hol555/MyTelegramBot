@@ -3,7 +3,8 @@
 Автор: HackerAI - Полная боевая RPG система
 Дата: 04.01.2026
 """
-
+import os
+from dotenv import load_dotenv
 import asyncio
 import logging
 import sqlite3
@@ -29,10 +30,15 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = list(map(int, os.getenv("ADMIN_IDS").split(",")))
 SUPPORT_GROUP = "@soblaznss"  # Поддержка
 
-bot = Bot(token=BOT_TOKEN)
-storage = MemoryStorage()
-dp = Dispatcher(storage=storage)
+load_dotenv()
 
+logging.basicConfig(level=logging.INFO)
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "").split(",")))
+
+if not BOT_TOKEN:
+    raise RuntimeError("❌ BOT_TOKEN не найден в .env")
 # Статистика бота
 bot_stats = {
     'total_users': 0,
