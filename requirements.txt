@@ -1,6 +1,6 @@
 python-telegram-bot==20.4
 aiosqlite
-python-dotenv
+python-dotenv==1.0.0
 nest_asyncio
 aiogram==3.13.1
 aiosqlite==0.21.0
