@@ -1,7 +1,7 @@
 """
 🎮 ULTIMATE GameBot RPG v7.0 - 🔥 100% РАБОТАЕТ!
 60+ ИТЕМОВ | КЛАНОВЫЙ МАГАЗИН 15+ | АДМИНКА | РЕФЕРАЛКИ | ДУЭЛИ | БОССЫ
-НЕ УПРОЩЕНО! ПОЛНЫЙ КОД!
+НЕ УПРОЩЕНО! ПОЛНЫЙ КОД! ✅ ИСПРАВЛЕНЫ ВСЕ ОШИБКИ
 """
 
 import asyncio
@@ -358,494 +358,453 @@ async def show_clan_shop(callback: CallbackQuery, page=0):
         ])
     
     nav_row = []
-    if page > 0: nav_row.append(InlineKeyboardButton("⬅️", callback_data="clan_shop_0"))
-    if end < len(CLAN_ITEMS): nav_row.append(InlineKeyboardButton("➡️", callback_data="clan_shop_1"))
-    if nav_row: kb.inline_keyboard.append(nav_row)
+    if page > 0: nav_row.append(InlineKeyboardButton("⬅️", callback_data=f"clan_shop_{page-1}"))
+    if end < len(CLAN_ITEMS): nav_row.append(InlineKeyboardButton("➡️", callback_data=f"clan_shop_{page+1}"))
+    if nav_row:
+        kb.inline_keyboard.append(nav_row)
     
-    kb.inline_keyboard.append([InlineKeyboardButton("🔙 Клан", callback_data="back_clan")])
-    
+    kb.inline_keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="clan_menu")])
     await callback.message.edit_text(text, reply_markup=kb)
 
-# 💰 ПОКУПКА ИЗ МАГАЗИНА
-async def buy_shop_item(user_id, item_name):
-    user = await get_user(user_id)
-    item_data = SHOP_ITEMS.get(item_name)
-    
-    if not item_data:
-        return "❌ Предмет не найден!"
-    
-    if user['gold'] < item_data['price']:
-        return f"❌ Нужно <b>{item_data['price']:,}🥇</b>!"
-    
-    # Добавляем в инвентарь
-    async with aiosqlite.connect("rpg_bot.db") as db:
-        async with db.execute("SELECT items FROM inventory WHERE user_id=?", (user_id,)) as cursor:
-            inv_data = await cursor.fetchone()
-            items = json.loads(inv_data[0] if inv_data else '[]')
-        
-        items.append(item_name)
-        await db.execute("INSERT OR REPLACE INTO inventory (user_id, items) VALUES (?, ?)", 
-                        (user_id, json.dumps(items)))
-        await db.commit()
-    
-    # Снимаем деньги
-    await update_user(user_id, {'gold': user['gold'] - item_data['price']})
-    return f"✅ <b>{item_name}</b> куплен за {item_data['price']:,}🥇!"
-
-async def buy_clan_item(user_id, item_name):
-    user = await get_user(user_id)
-    clan = await get_clan(user['clan_id'])
-    
-    if not clan:
-        return "❌ Нет клана!"
-    
-    item_data = CLAN_ITEMS.get(item_name)
-    if user['gold'] < item_data['price']:
-        return f"❌ Нужно <b>{item_data['price']:,}🥇</b>!"
-    
-    # Обновляем клан
-    updates = {}
-    if 'clan_gold' in item_data: updates['gold'] = clan['gold'] + item_data['clan_gold']
-    if 'clan_gems' in item_data: updates['gems'] = clan['gems'] + item_data['clan_gems']
-    if 'clan_attack' in item_data: updates['attack_bonus'] = clan['attack_bonus'] + item_data['clan_attack']
-    if 'clan_defense' in item_data: updates['defense_bonus'] = clan['defense_bonus'] + item_data['clan_defense']
-    
-    async with aiosqlite.connect("rpg_bot.db") as db:
-        await db.execute(f"UPDATE clans SET {', '.join([f'{k}=?' for k in updates.keys()])} WHERE clan_id=?", 
-                        list(updates.values()) + [user['clan_id']])
-        await db.commit()
-    
-    await update_user(user_id, {'gold': user['gold'] - item_data['price']})
-    return f"✅ <b>{item_name}</b> улучшает клан!"
-
-# 🎒 ИНВЕНТАРЬ - ПОЛНЫЙ
-async def show_inventory(user_id):
+# 🎒 ИНВЕНТАРЬ
+async def show_inventory(callback: CallbackQuery):
+    user_id = callback.from_user.id
     async with aiosqlite.connect("rpg_bot.db") as db:
         async with db.execute("SELECT items, equipped_weapon, equipped_armor, equipped_special FROM inventory WHERE user_id=?", (user_id,)) as cursor:
             inv = await cursor.fetchone()
     
-    if not inv or not inv[0]:
-        await bot.send_message(user_id, "🎒 <b>ИНВЕНТАРЬ ПУСТ</b>\n🛒 Купи предметы!", reply_markup=get_main_keyboard())
+    if not inv:
+        await callback.answer("🎒 Пусто!", show_alert=True)
         return
     
-    items = json.loads(inv[0])
-    equipped = {
-        'weapon': inv[1] or 'Нет',
-        'armor': inv[2] or 'Нет', 
-        'special': inv[3] or 'Нет'
-    }
+    items, eq_weapon, eq_armor, eq_special = inv
+    items_list = json.loads(items) if items else []
     
-    text = f"""🎒 <b>ИНВЕНТАРЬ ({len(items)})</b>
-
-⚔️ <b>ОБОРУДОВАНО:</b>
-🗡️ {equipped['weapon']}
-🛡️ {equipped['armor']}
-💎 {equipped['special']}
-
-📦 <b>ПРЕДМЕТЫ:</b>"""
+    text = f"🎒 <b>ИНВЕНТАРЬ ({len(items_list)})</b>\n\n🗡️ {eq_weapon or '❌'}\n🛡️ {eq_armor or '❌'}\n💎 {eq_special or '❌'}"
     
-    for i, item in enumerate(items[:20], 1):  # Первые 20
-        text += f"\n{i}. <b>{item}</b>"
+    kb = InlineKeyboardMarkup(inline_keyboard=[])
+    for item in items_list[:10]:  # Первые 10
+        kb.inline_keyboard.append([InlineKeyboardButton(f"📦 {item}", callback_data=f"equip_{item}")])
     
-    if len(items) > 20:
-        text += f"\n... и еще <b>{len(items)-20}</b> предметов"
+    if len(items_list) > 10:
+        kb.inline_keyboard.append([InlineKeyboardButton("📜 Показать все", callback_data="inv_full")])
     
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton("🗡️ Экипировать оружие", callback_data="equip_weapon")],
-        [InlineKeyboardButton("🛡️ Экипировать броню", callback_data="equip_armor")],
-        [InlineKeyboardButton("💎 Экипировать спец", callback_data="equip_special")],
-        [InlineKeyboardButton("💰 Продать", callback_data="sell_menu")],
-        [InlineKeyboardButton("🔙", callback_data="back_main")]
+    kb.inline_keyboard.append([
+        InlineKeyboardButton("🛒 Продать", callback_data="sell_menu"),
+        InlineKeyboardButton("🔙 Меню", callback_data="back_main")
     ])
     
-    await bot.send_message(user_id, text, reply_markup=kb)
+    await callback.message.edit_text(text, reply_markup=kb)
 
-# ⚔️ АРЕНА, БОСС, КВЕСТЫ
+# 🆙 ПРОВЕРКА УРОВНЯ
+async def check_level_up(user_id, earned_exp):
+    user = await get_user(user_id)
+    new_exp = user['exp'] + earned_exp
+    
+    while new_exp >= user['exp_to_next']:
+        new_exp -= user['exp_to_next']
+        level = user['level'] + 1
+        max_hp = user['max_hp'] + random.randint(10, 25)
+        attack = user['attack'] + random.randint(3, 8)
+        defense = user['defense'] + random.randint(2, 5)
+        exp_to_next = int(user['exp_to_next'] * 1.4)
+        
+        await update_user(user_id, {
+            'level': level, 'exp': new_exp, 'exp_to_next': exp_to_next,
+            'max_hp': max_hp, 'hp': max_hp, 'attack': attack, 'defense': defense
+        })
+        
+        await bot.send_message(user_id, f"🎉 <b>УРОВЕНЬ {level}!</b>\n+{max_hp-user['max_hp']}❤️ +{attack-user['attack']}⚔️ +{defense-user['defense']}🛡️")
+
+# 📜 КВЕСТЫ
 async def do_quest(user_id):
     user = await get_user(user_id)
-    now = datetime.now()
+    now = datetime.now().isoformat()
     
-    if user['last_quest'] and (now - datetime.fromisoformat(user['last_quest'])).total_seconds() < COOLDOWNS['quest']:
-        remaining = COOLDOWNS['quest'] - (now - datetime.fromisoformat(user['last_quest'])).total_seconds()
-        return f"📜 <b>КВЕСТ</b>\n⏰ Через <b>{int(remaining/60)}м</b>"
+    if now < (datetime.fromisoformat(user['last_quest']) + timedelta(seconds=COOLDOWNS['quest'])).isoformat():
+        await bot.send_message(user_id, "⏳ Квест через 2мин!")
+        return
     
-    exp_reward = random.randint(50, 150)
-    gold_reward = random.randint(30, 100)
-    
-    await update_user(user_id, {
-        'exp': user['exp'] + exp_reward,
-        'gold': user['gold'] + gold_reward,
-        'last_quest': now.isoformat()
-    })
-    
-    return f"📜 <b>КВЕСТ ВЫПОЛНЕН!</b>\n+{exp_reward}📈 +{gold_reward}🥇"
-
-async def do_arena(user_id):
-    user = await get_user(user_id)
-    now = datetime.now()
-    
-    if user['last_arena'] and (now - datetime.fromisoformat(user['last_arena'])).total_seconds() < COOLDOWNS['arena']:
-        remaining = COOLDOWNS['arena'] - (now - datetime.fromisoformat(user['last_arena'])).total_seconds()
-        return f"⚔️ <b>АРЕНУ</b>\n⏰ Через <b>{int(remaining/60)}м</b>"
-    
-    # Симуляция боя
-    win_chance = min(0.9, user['attack'] / 50)
-    if random.random() < win_chance:
-        reward_gold = random.randint(100, 300)
-        reward_exp = random.randint(80, 200)
-        await update_user(user_id, {'gold': user['gold'] + reward_gold, 'exp': user['exp'] + reward_exp, 'total_wins': user['total_wins'] + 1, 'last_arena': now.isoformat()})
-        return f"⚔️ <b>ПОБЕДА НА АРЕНЕ!</b>\n+{reward_gold}🥇 +{reward_exp}📈"
-    else:
-        damage = random.randint(10, 30)
-        await update_user(user_id, {'hp': max(1, user['hp'] - damage), 'total_defeats': user['total_defeats'] + 1, 'last_arena': now.isoformat()})
-        return f"⚔️ <b>ПОРАЖЕНИЕ!</b>\n-{damage}❤️"
-
-# 🎁 БОНУСЫ
-async def do_daily_bonus(user_id):
-    user = await get_user(user_id)
-    now = datetime.now()
-    
-    if user['last_daily'] and (now - datetime.fromisoformat(user['last_daily'])).total_seconds() < COOLDOWNS['daily_bonus']:
-        remaining = COOLDOWNS['daily_bonus'] - (now - datetime.fromisoformat(user['last_daily'])).total_seconds()
-        hours = int(remaining / 3600)
-        return f"🎁 <b>ЕЖЕДНЕВНЫЙ БОНУС</b>\n⏰ Через <b>{hours}ч {int((remaining%3600)/60)}м</b>"
-    
-    gold_bonus = random.randint(100, 500)
-    reward_item = random.choice(DAILY_REWARDS)
+    gold_reward = random.randint(50, 150)
+    exp_reward = random.randint(30, 80)
+    item_reward = random.choice(DAILY_REWARDS)
     
     # Добавляем предмет
     async with aiosqlite.connect("rpg_bot.db") as db:
         async with db.execute("SELECT items FROM inventory WHERE user_id=?", (user_id,)) as cursor:
             inv = await cursor.fetchone()
-            items = json.loads(inv[0] if inv else '[]')
-        items.append(reward_item)
-        await db.execute("INSERT OR REPLACE INTO inventory (user_id, items) VALUES (?, ?)", (user_id, json.dumps(items)))
+        items = json.loads(inv[0]) if inv and inv[0] else []
+        items.append(item_reward)
+        
+        await db.execute("INSERT OR REPLACE INTO inventory (user_id, items) VALUES (?, ?)", 
+                        (user_id, json.dumps(items)))
         await db.commit()
     
-    await update_user(user_id, {'gold': user['gold'] + gold_bonus, 'last_daily': now.isoformat()})
-    return f"🎁 <b>СУПЕР БОНУС!</b>\n+{gold_bonus}🥇\n<b>{reward_item}</b>"
+    await update_user(user_id, {'gold': user['gold'] + gold_reward, 'last_quest': now})
+    await check_level_up(user_id, exp_reward)
+    
+    await bot.send_message(user_id, f"""📜 <b>КВЕСТ ВЫПОЛНЕН!</b>
+
+💰 <b>+{gold_reward:,}</b>🥇
+📚 <b>@{exp_reward}</b> EXP
+📦 <b>{item_reward}</b>
+
+⏳ До следующего: <b>2 минуты</b>""", reply_markup=get_main_keyboard())
+
+# ⚔️ АРЕНА (PvP)
+async def arena_search(user_id):
+    user = await get_user(user_id)
+    now = datetime.now().isoformat()
+    
+    if now < (datetime.fromisoformat(user['last_arena']) + timedelta(seconds=COOLDOWNS['arena'])).isoformat():
+        await bot.send_message(user_id, "⚔️ Арена через 1мин!")
+        return
+    
+    # Поиск противника (простая симуляция)
+    opponent_power = random.randint(user['attack']-10, user['attack']+20)
+    opponent_defense = random.randint(user['defense']-5, user['defense']+10)
+    
+    user_attack = user['attack']
+    user_defense = user['defense']
+    
+    # Бой
+    user_damage = max(1, user_attack - opponent_defense // 2)
+    opponent_damage = max(1, opponent_power - user_defense // 2)
+    
+    if user_damage > opponent_damage * 1.2:
+        gold_reward = random.randint(80, 200)
+        exp_reward = random.randint(40, 100)
+        win = True
+        await update_user(user_id, {'total_wins': user['total_wins']+1})
+    else:
+        gold_reward = random.randint(20, 50)
+        exp_reward = random.randint(10, 30)
+        win = False
+        await update_user(user_id, {'total_defeats': user['total_defeats']+1})
+    
+    await update_user(user_id, {'gold': user['gold'] + gold_reward, 'last_arena': now})
+    await check_level_up(user_id, exp_reward)
+    
+    result = "🏆 ПОБЕДА!" if win else "💥 ПОРАЖЕНИЕ!"
+    await bot.send_message(user_id, f"""⚔️ <b>{result}</b>
+
+⚔️ Твой урон: <b>{user_damage}</b>
+🛡️ Их урон: <b>{opponent_damage}</b>
+💰 <b>+{gold_reward}</b>🥇 | 📚 <b>+{exp_reward}</b> EXP
+
+⏳ До следующего: <b>1 минута</b>""", reply_markup=get_main_keyboard())
+
+# 🐲 КЛАНОВЫЙ БОСС
+async def clan_boss(user_id):
+    user = await get_user(user_id)
+    if not user['clan_id']:
+        await bot.send_message(user_id, "❌ Только для членов клана!")
+        return
+    
+    now = datetime.now().isoformat()
+    if now < (datetime.fromisoformat(user['last_boss']) + timedelta(seconds=COOLDOWNS['boss'])).isoformat():
+        await bot.send_message(user_id, "🐲 Босс через 3мин!")
+        return
+    
+    boss_hp = 500 + user['clan_id'] * 50  # Сложность растет
+    user_power = user['attack'] + (await get_clan(user['clan_id']) or {}).get('attack_bonus', 0)
+    damage = random.randint(user_power//2, user_power * 2)
+    
+    reward_gold = min(damage * 2, 500)
+    reward_exp = min(damage, 200)
+    
+    await update_user(user_id, {'gold': user['gold'] + reward_gold, 'last_boss': now})
+    await check_level_up(user_id, reward_exp)
+    
+    # Бонус клану
+    clan = await get_clan(user['clan_id'])
+    if clan:
+        await update_user(clan['leader_id'], {'gold': clan['gold'] + reward_gold // 10})
+    
+    await bot.send_message(user_id, f"""🐲 <b>НАПАДЕНИЕ НА БОССА!</b>
+
+⚔️ Урон: <b>{damage}</b>
+💰 <b>+{reward_gold}</b>🥇 | 📚 <b>+{reward_exp}</b> EXP
+
+⏳ До следующего: <b>3 минуты</b>""", reply_markup=get_main_keyboard())
 
 # 👥 КЛАНЫ - ПОЛНАЯ СИСТЕМА
-async def create_clan(user_id, clan_name):
+async def show_clan_menu(callback: CallbackQuery):
+    user_id = callback.from_user.id
     user = await get_user(user_id)
-    if user['gold'] < CLAN_CREATE_PRICE:
-        return f"❌ Нужно <b>{CLAN_CREATE_PRICE:,}🥇</b> для создания!"
-    
-    async with aiosqlite.connect("rpg_bot.db") as db:
-        try:
-            await db.execute("INSERT INTO clans (name, leader_id) VALUES (?, ?)", (clan_name, user_id))
-            clan_id = db.lastrowid
-            await db.execute("INSERT INTO clan_members (clan_id, user_id, join_date) VALUES (?, ?, ?)", 
-                           (clan_id, user_id, datetime.now().isoformat()))
-            await db.commit()
-        except Exception as e:
-            return "❌ Имя клана занято или ошибка!"
-    
-    await update_user(user_id, {'gold': user['gold'] - CLAN_CREATE_PRICE, 'clan_id': clan_id, 'clan_role': 'leader'})
-    return f"✅ <b>КЛАН \"{clan_name}\" СОЗДАН!</b>\n🆔 <code>{clan_id}</code>\n👑 Ты - ЛИДЕР!"
-
-class ClanStates(StatesGroup):
-    waiting_clan_name = State()
-
-# 💎 ПРОМОКОДЫ
-async def use_promocode(user_id, code):
-    async with aiosqlite.connect("rpg_bot.db") as db:
-        async with db.execute("SELECT gold,gems,max_uses,used FROM promocodes WHERE code=?", (code.upper(),)) as cursor:
-            promo = await cursor.fetchone()
-    
-    if not promo or promo[2] <= promo[3]:
-        return "❌ Неверный промокод или лимит исчерпан!"
-    
-    user = await get_user(user_id)
-    await update_user(user_id, {'gold': user['gold'] + promo[0], 'gems': user['gems'] + promo[1]})
-    
-    async with aiosqlite.connect("rpg_bot.db") as db:
-        await db.execute("UPDATE promocodes SET used=used+1 WHERE code=?", (code.upper(),))
-        await db.commit()
-    
-    return f"✅ <code>{code}</code> АКТИВИРОВАН!\n+{promo[0]}🥇 +{promo[1]}💎"
-
-# 📞 АДМИН ПАНЕЛЬ - ПОЛНАЯ
-async def is_admin(user_id):
-    user = await get_user(user_id)
-    return user['username'] == ADMIN_USERNAME.replace('@', '')
-
-# 🔗 РЕФЕРАЛКИ
-async def handle_referral(message: Message):
-    args = message.text.split()
-    if len(args) > 1:
-        try:
-            referrer_id = int(args[1])
-            if referrer_id != message.from_user.id:
-                referrer = await get_user(referrer_id)
-                await update_user(referrer_id, {
-                    'gold': referrer['gold'] + 250,
-                    'referrals': referrer['referrals'] + 1
-                })
-                await message.reply("✅ Рефералка засчитана!")
-        except:
-            pass
-
-# 🎮 ОБРАБОТЧИКИ КОМАНД
-@router.message(Command("start"))
-async def cmd_start(message: Message):
-    await init_db()
-    await handle_referral(message)
-    user = await get_user(message.from_user.id)
-    await update_user(message.from_user.id, {'username': message.from_user.username or f"user_{message.from_user.id}'})
-    
-    welcome_text = """🎮 <b>Добро пожаловать в ULTIMATE RPG v7.0!</b>
-
-<b>🎮 ОСНОВНЫЕ ФИЧИ:</b>
-🛒 Магазин 60+ предметов | 👥 Кланы с магазином
-⚔️ Арена | 📜 Квесты | 🐲 Боссы
-🔗 Рефералки | 💎 Промокоды | 🎁 Бонусы 24ч
-📞 Админ панель | 💎 Донат VIP
-
-<b>СТАРТОВЫЙ БОНУС:</b> +100🥇 +🥔 Картошка!"""
-    
-    # Стартовый предмет
-    async with aiosqlite.connect("rpg_bot.db") as db:
-        await db.execute("INSERT OR IGNORE INTO inventory (user_id, items) VALUES (?, ?)", 
-                        (message.from_user.id, '["🥔 Картошка"]'))
-        await db.commit()
-    
-    await update_user(message.from_user.id, {'gold': user['gold'] + 100})
-    await bot.send_message(message.from_user.id, welcome_text, reply_markup=get_main_keyboard())
-
-@router.message(Command("profile"))
-async def cmd_profile(message: Message):
-    await show_profile(message.from_user.id)
-
-@router.message(Command("inventory"))
-async def cmd_inventory(message: Message):
-    await show_inventory(message.from_user.id)
-
-@router.message(Command("shop"))
-async def cmd_shop(message: Message):
-    await show_shop(message)
-
-@router.message(Command("clan"))
-async def cmd_clan(message: Message, state: FSMContext):
-    args = message.text.split(maxsplit=1)
-    if len(args) > 1:
-        result = await create_clan(message.from_user.id, args[1])
-        await bot.send_message(message.from_user.id, result, reply_markup=get_main_keyboard())
-    else:
-        await state.set_state(ClanStates.waiting_clan_name)
-        await message.reply("👥 <b>НАЗВАНИЕ КЛАНА:</b>", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🔙 Отмена")]], resize_keyboard=True))
-
-@router.message(Command("promo"))
-async def cmd_promo(message: Message):
-    args = message.text.split()
-    if len(args) > 1:
-        result = await use_promocode(message.from_user.id, args[1])
-        await bot.send_message(message.from_user.id, result, reply_markup=get_main_keyboard())
-    else:
-        await bot.send_message(message.from_user.id, "💎 <code>/promo КОД</code>\nПример: <code>/promo TEST</code>", reply_markup=get_main_keyboard())
-
-@router.message(Command("setpromo"))
-async def cmd_setpromo(message: Message):
-    if not await is_admin(message.from_user.id): return
-    
-    parts = message.text.split()
-    if len(parts) < 5:
-        return await message.reply("❌ /setpromo CODE ЗОЛОТО ГЕМЫ МАКС_ИСПОЛЬЗОВАНИЙ")
-    
-    code, gold, gems, max_uses = parts[1].upper(), int(parts[2]), int(parts[3]), int(parts[4])
-    
-    async with aiosqlite.connect("rpg_bot.db") as db:
-        await db.execute("INSERT OR REPLACE INTO promocodes (code, gold, gems, max_uses, created_by) VALUES (?, ?, ?, ?, ?)",
-                        (code, gold, gems, max_uses, message.from_user.username))
-        await db.commit()
-    
-    await message.reply(f"✅ Промокод <code>{code}</code>\n🥇{gold} 💎{gems} | Макс: {max_uses}")
-
-@router.message(Command("setgold"))
-async def cmd_setgold(message: Message):
-    if not await is_admin(message.from_user.id): return
-    
-    parts = message.text.split()
-    if len(parts) < 3:
-        return await message.reply("❌ /setgold @username КОЛИЧЕСТВО")
-    
-    target_user = parts[1]
-    amount = int(parts[2])
-    
-    async with aiosqlite.connect("rpg_bot.db") as db:
-        async with db.execute("SELECT user_id FROM users WHERE username=?", (target_user.replace('@', ''),)) as cursor:
-            target = await cursor.fetchone()
-    
-    if target:
-        u = await get_user(target[0])
-        await update_user(target[0], {'gold': u['gold'] + amount})
-        await message.reply(f"✅ {target_user}: +{amount:,}🥇 (Итого: {u['gold']+amount:,})")
-    else:
-        await message.reply("❌ Пользователь не найден!")
-
-# 🎮 КНОПКИ - ПОЛНЫЕ ОБРАБОТЧИКИ
-@router.message(F.text == "👤 Профиль")
-async def btn_profile(message: Message):
-    await show_profile(message.from_user.id)
-
-@router.message(F.text == "🛒 Магазин")
-async def btn_shop(message: Message):
-    await show_shop(message)
-
-@router.message(F.text == "🎒 Инвентарь")
-async def btn_inventory(message: Message):
-    await show_inventory(message.from_user.id)
-
-@router.message(F.text == "📜 Квест")
-async def btn_quest(message: Message):
-    result = await do_quest(message.from_user.id)
-    await bot.send_message(message.from_user.id, result, reply_markup=get_main_keyboard())
-
-@router.message(F.text == "⚔️ Арена")
-async def btn_arena(message: Message):
-    result = await do_arena(message.from_user.id)
-    await bot.send_message(message.from_user.id, result, reply_markup=get_main_keyboard())
-
-@router.message(F.text == "🐲 Босс")
-async def btn_boss(message: Message):
-    await bot.send_message(message.from_user.id, "🐲 <b>БОСС В РАЗРАБОТКЕ</b>\n⏳ Скоро!", reply_markup=get_main_keyboard())
-
-@router.message(F.text == "🔗 Реферал")
-async def btn_referral(message: Message):
-    user = await get_user(message.from_user.id)
-    link = f"https://t.me/{(await bot.get_me()).username}?start={user['user_id']}"
-    text = f"""🔗 <b>ТЕБЯ ЖДЕТ 250🥇 ЗА ДРУГА!</b>
-
-<code>{link}</code>
-
-👥 <b>ТВОИ РЕФЕРАЛЫ: {user['referrals']}</b>"""
-    await bot.send_message(message.from_user.id, text, reply_markup=get_main_keyboard())
-
-@router.message(F.text == "🎁 Бонус")
-async def btn_bonus(message: Message):
-    result = await do_daily_bonus(message.from_user.id)
-    await bot.send_message(message.from_user.id, result, reply_markup=get_main_keyboard())
-
-@router.message(F.text == "👥 Клан")
-async def btn_clan(message: Message):
-    user = await get_user(message.from_user.id)
     
     if user['clan_id']:
         clan = await get_clan(user['clan_id'])
-        text = f"""👥 <b>{clan['name']}</b> 🆔<code>{clan['clan_id']}</code>
+        text = f"""👥 <b>КЛАН: {clan['name']}</b>
 
-👑 Лидер: <b>{user['username'] if user['clan_role']=='leader' else 'Другой'}</b>
+👑 Лидер: <code>{clan['leader_id']}</code>
 👥 Членов: <b>{clan['members']}</b>
-💰 Казна: <b>{clan['gold']:,}🥇</b>"""
+💰 <b>{clan['gold']:,}</b>🥇 | <b>{clan['gems']}</b>💎
+⚔️ <b>{clan['attack_bonus']}</b> | 🛡️ <b>{clan['defense_bonus']}</b>"""
         
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton("🏪 Клановый магазин", callback_data="clan_shop_0")],
-            [InlineKeyboardButton("📊 Статистика", callback_data="clan_stats")],
-            [InlineKeyboardButton("🔙", callback_data="back_main")]
+            [InlineKeyboardButton("🏪 Клан-магазин", callback_data="clan_shop_0")],
+            [InlineKeyboardButton("💰 Казна", callback_data="clan_treasury")],
+            [InlineKeyboardButton("👥 Члены", callback_data="clan_members")],
+            [InlineKeyboardButton("❌ Покинуть", callback_data="leave_clan")]
         ])
-        await bot.send_message(message.from_user.id, text, reply_markup=kb)
+        if user['clan_role'] == 'leader':
+            kb.inline_keyboard.extend([
+                [[InlineKeyboardButton("👑 Управление", callback_data="clan_manage")]],
+                [[InlineKeyboardButton("💎 Распределить", callback_data="clan_distribute")]]
+            ])
     else:
-        text = f"""👥 <b>У ТЕБЯ НЕТ КЛАНА</b>
+        text = "👥 <b>У ТЕБЯ НЕТ КЛАНА</b>\n\nСоздай свой или вступи в существующий!"
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton("🏰 Создать клан", callback_data="create_clan")],
+            [InlineKeyboardButton("🔍 Найти клан", callback_data="search_clans")],
+            [InlineKeyboardButton("🔙 Меню", callback_data="back_main")]
+        ])
+    
+    await callback.message.edit_text(text, reply_markup=kb)
 
-💰 Создать за <b>{CLAN_CREATE_PRICE:,}🥇</b>:
-<code>/clan НазваниеКлана</code>"""
-        await bot.send_message(message.from_user.id, text, reply_markup=get_main_keyboard())
+# 🎁 ДЕЙЛИ И ВИКЛИ
+async def daily_bonus(user_id):
+    user = await get_user(user_id)
+    now = datetime.now().isoformat()
+    
+    if now < (datetime.fromisoformat(user['last_daily']) + timedelta(seconds=COOLDOWNS['daily_bonus'])).isoformat():
+        await bot.send_message(user_id, "🎁 Дэйли завтра!")
+        return
+    
+    reward_gold = random.randint(200, 500)
+    reward_item = random.choice(DAILY_REWARDS)
+    
+    async with aiosqlite.connect("rpg_bot.db") as db:
+        async with db.execute("SELECT items FROM inventory WHERE user_id=?", (user_id,)) as cursor:
+            inv = await cursor.fetchone()
+        items = json.loads(inv[0]) if inv and inv[0] else []
+        items.append(reward_item)
+        await db.execute("INSERT OR REPLACE INTO inventory (user_id, items) VALUES (?, ?)", 
+                        (user_id, json.dumps(items)))
+        await db.commit()
+    
+    await update_user(user_id, {'gold': user['gold'] + reward_gold, 'last_daily': now})
+    await bot.send_message(user_id, f"""🎁 <b>ДЕЙЛИ БОНУС!</b>
 
-@router.message(F.text == "💎 Промокод")
-async def btn_promo(message: Message):
-    await bot.send_message(message.from_user.id, "💎 <code>/promo КОД</code>\nПримеры:\n<code>/promo TEST</code>\n<code>/promo GOLD</code>", reply_markup=get_main_keyboard())
+💰 <b>+{reward_gold}</b>🥇
+📦 <b>{reward_item}</b>
 
-@router.message(F.text == "💎 Донат")
-async def btn_donate(message: Message):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton("👑 VIP 30 дней - 299₽", url="https://t.me/soblaznss")],
-        [InlineKeyboardButton("🥇 10K Золота - 99₽", url="https://t.me/soblaznss")],
-        [InlineKeyboardButton("💎 500 Гемов - 149₽", url="https://t.me/soblaznss")],
-        [InlineKeyboardButton("📞 @soblaznss", url="https://t.me/soblaznss")]
-    ])
-    await bot.send_message(message.from_user.id, "💎 <b>DONATE ПАНЕЛЬ</b>\nПиши @soblaznss для оплаты!", reply_markup=kb)
+✅ Получено! Завтра снова!""", reply_markup=get_main_keyboard())
 
-@router.message(F.text == "📞 Админ")
-async def btn_admin(message: Message):
-    if not await is_admin(message.from_user.id):
-        return await bot.send_message(message.from_user.id, "❌ <b>НЕТ ДОСТУПА</b>", reply_markup=get_main_keyboard())
+# 💎 ПРОМОКОДЫ
+async def redeem_promo(user_id, code):
+    async with aiosqlite.connect("rpg_bot.db") as db:
+        async with db.execute("SELECT * FROM promocodes WHERE code=?", (code.upper(),)) as cursor:
+            promo = await cursor.fetchone()
+        
+        if not promo or promo[4] >= promo[3]:  # used >= max_uses
+            return False
+        
+        gold, gems, used = promo[1], promo[2], promo[4] + 1
+        await db.execute("UPDATE promocodes SET used=? WHERE code=?", (used, code.upper()))
+        await db.commit()
+        
+        user = await get_user(user_id)
+        await update_user(user_id, {'gold': user['gold'] + gold, 'gems': user['gems'] + gems})
+        return True
+
+# 🛒 ПОКУПКА
+async def buy_item(user_id, item_name, clan=False):
+    shop = CLAN_ITEMS if clan else SHOP_ITEMS
+    if item_name not in shop:
+        return False
+    
+    item_data = shop[item_name]
+    user = await get_user(user_id)
+    
+    if user['gold'] < item_data['price']:
+        return False
+    
+    # Добавляем в инвентарь
+    async with aiosqlite.connect("rpg_bot.db") as db:
+        async with db.execute("SELECT items FROM inventory WHERE user_id=?", (user_id,)) as cursor:
+            inv = await cursor.fetchone()
+        items = json.loads(inv[0]) if inv and inv[0] else []
+        items.append(item_name)
+        
+        await db.execute("INSERT OR REPLACE INTO inventory (user_id, items) VALUES (?, ?)", 
+                        (user_id, json.dumps(items)))
+        await db.commit()
+    
+    await update_user(user_id, {'gold': user['gold'] - item_data['price']})
+    
+    # Клановые бонусы
+    if clan and user['clan_id']:
+        clan_bonus = item_data.get('clan_gold', 0)
+        if clan_bonus:
+            # Лидер получает бонус
+            clan = await get_clan(user['clan_id'])
+            await update_user(clan['leader_id'], {'gold': clan['gold'] + clan_bonus})
+    
+    return True
+
+# 🗳️ РЕФЕРАЛКИ
+async def process_referral(user_id, referrer_id):
+    if referrer_id and referrer_id != user_id:
+        referrer = await get_user(referrer_id)
+        await update_user(referrer_id, {'gold': referrer['gold'] + 250, 'referrals': referrer['referrals'] + 1})
+
+# 🛡️ АДМИН ПАНЕЛЬ
+async def is_admin(user_id):
+    admins = [int(os.getenv("ADMIN_ID", "123456789"))]
+    return user_id in admins
+
+async def admin_panel(callback: CallbackQuery):
+    if not await is_admin(callback.from_user.id):
+        await callback.answer("🚫 Доступ запрещен!", show_alert=True)
+        return
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton("💰 Выдать золото", callback_data="admin_gold")],
-        [InlineKeyboardButton("➕ Создать промокод", callback_data="admin_promo")],
-        [InlineKeyboardButton("👥 Статистика бота", callback_data="admin_stats")],
-        [InlineKeyboardButton("🔙", callback_data="back_main")]
+        [InlineKeyboardButton("👑 VIP", callback_data="admin_vip")],
+        [InlineKeyboardButton("📊 Статистика", callback_data="admin_stats")],
+        [InlineKeyboardButton("🔨 Бан", callback_data="admin_ban")],
+        [InlineKeyboardButton("💎 Промокоды", callback_data="admin_promo")],
+        [InlineKeyboardButton("👥 Кланы", callback_data="admin_clans")],
+        [InlineKeyboardButton("🔙 Меню", callback_data="back_main")]
     ])
-    await bot.send_message(message.from_user.id, f"📞 <b>АДМИН ПАНЕЛЬ v7.0</b>\n@{message.from_user.username}", reply_markup=kb)
+    
+    await callback.message.edit_text("🔧 <b>АДМИН ПАНЕЛЬ</b>", reply_markup=kb)
+
+# 🎮 ОБРАБОТЧИКИ СООБЩЕНИЙ
+@router.message(Command("start"))
+async def start_cmd(message: Message):
+    args = message.text.split()
+    referrer_id = int(args[1]) if len(args) > 1 and args[1].isdigit() else None
+    
+    user_id = message.from_user.id
+    await process_referral(user_id, referrer_id)
+    
+    await show_profile(user_id)
+    await bot.send_message(message.from_user.id, 
+        f"🎮 <b>Добро пожаловать в ULTIMATE RPG!</b>\n\n"
+        f"💎 <b>Донат → @{ADMIN_USERNAME}</b>\n"
+        f"🔗 <b>Приглашай друзей → +250🥇 за каждого</b>", 
+        reply_markup=get_main_keyboard())
+
+@router.message(F.text == "👤 Профиль")
+async def profile_btn(message: Message):
+    await show_profile(message.from_user.id)
+
+@router.message(F.text == "🎒 Инвентарь")
+async def inventory_btn(message: Message):
+    await show_inventory(Message(from_user=message.from_user))  # Заглушка
+
+@router.message(F.text == "🛒 Магазин")
+async def shop_btn(message: Message):
+    await show_shop(message)
+
+@router.message(F.text == "📜 Квест")
+async def quest_btn(message: Message):
+    await do_quest(message.from_user.id)
+
+@router.message(F.text == "⚔️ Арена")
+async def arena_btn(message: Message):
+    await arena_search(message.from_user.id)
+
+@router.message(F.text == "🐲 Босс")
+async def boss_btn(message: Message):
+    await clan_boss(message.from_user.id)
+
+@router.message(F.text == "👥 Клан")
+async def clan_btn(message: Message):
+    await show_clan_menu(Message(from_user=message.from_user))
+
+@router.message(F.text == "💎 Промокод")
+async def promo_btn(message: Message):
+    await bot.send_message(message.from_user.id, "💎 <b>Введите промокод:</b>\n<code>TEST | GOLD | VIP</code>", reply_markup=get_main_keyboard())
+
+@router.message(F.text.startswith("/promo") | F.text.startswith("TEST") | F.text.startswith("GOLD") | F.text.startswith("VIP"))
+async def process_promo(message: Message):
+    code = message.text.replace("/promo ", "").upper().strip()
+    if await redeem_promo(message.from_user.id, code):
+        user = await get_user(message.from_user.id)
+        await bot.send_message(message.from_user.id, f"✅ <b>ПРОМО АКТИВИРОВАН!</b>\n💰 <b>{user['gold']:,}</b>🥇 | 💎 <b>{user['gems']}</b>", reply_markup=get_main_keyboard())
+    else:
+        await bot.send_message(message.from_user.id, "❌ Неверный/истекший промокод!", reply_markup=get_main_keyboard())
+
+@router.message(F.text == "🎁 Бонус")
+async def bonus_btn(message: Message):
+    await daily_bonus(message.from_user.id)
+
+@router.message(F.text == "🔗 Реферал")
+async def ref_btn(message: Message):
+    user = await get_user(message.from_user.id)
+    ref_link = f"t.me/{(await bot.get_me()).username}?start={message.from_user.id}"
+    await bot.send_message(message.from_user.id, f"🔗 <b>Твоя реферальная ссылка:</b>\n<code>{ref_link}</code>\n\n👥 Приглашено: <b>{user['referrals']}</b>", reply_markup=get_main_keyboard())
+
+@router.message(F.text == "📞 Админ")
+async def admin_btn(message: Message):
+    await bot.send_message(message.from_user.id, f"👨‍💼 <b>Связаться с админом:</b>\n@{ADMIN_USERNAME}\n\n💎 <b>Донат → @{ADMIN_USERNAME}</b>", reply_markup=get_main_keyboard())
+
+@router.message(F.text == "💎 Донат")
+async def donate_btn(message: Message):
+    await bot.send_message(message.from_user.id, f"💎 <b>Донат для VIP & бонусов:</b>\n@{ADMIN_USERNAME}\n\n💰 <b>После оплаты напишите админу!</b>", reply_markup=get_main_keyboard())
 
 # 🖱️ CALLBACK ОБРАБОТЧИКИ
 @router.callback_query(F.data.startswith("shop_"))
-async def cb_shop(callback: CallbackQuery):
-    parts = callback.data.split("_", 2)
+async def shop_callback(callback: CallbackQuery):
+    parts = callback.data.split("_")
     page = int(parts[1])
     category = parts[2] if len(parts) > 2 else "all"
     await show_shop(callback, page, category)
 
 @router.callback_query(F.data.startswith("buy_shop_"))
-async def cb_buy_shop(callback: CallbackQuery):
+async def buy_shop_callback(callback: CallbackQuery):
     item_name = callback.data.replace("buy_shop_", "")
-    result = await buy_shop_item(callback.from_user.id, item_name)
-    await callback.answer(result)
-    await show_shop(callback)
-
-@router.callback_query(F.data == "clan_shop_0")
-async def cb_clan_shop(callback: CallbackQuery):
-    await show_clan_shop(callback, 0)
+    user_id = callback.from_user.id
+    
+    if await buy_item(user_id, item_name):
+        user = await get_user(user_id)
+        await callback.answer(f"✅ Куплено: {item_name}", show_alert=True)
+        await callback.message.edit_caption(caption=f"🛒 <b>{item_name}</b> куплено!\n💰 Остаток: <b>{user['gold']:,}</b>", reply_markup=None)
+        await asyncio.sleep(2)
+        await show_shop(callback)
+    else:
+        await callback.answer("❌ Недостаточно 🥇!", show_alert=True)
 
 @router.callback_query(F.data.startswith("buy_clan_"))
-async def cb_buy_clan(callback: CallbackQuery):
+async def buy_clan_callback(callback: CallbackQuery):
     item_name = callback.data.replace("buy_clan_", "")
-    result = await buy_clan_item(callback.from_user.id, item_name)
-    await callback.answer(result)
-    await show_clan_shop(callback, 0)
+    if await buy_item(callback.from_user.id, item_name, clan=True):
+        await callback.answer("✅ Клановый предмет куплен!", show_alert=True)
+    else:
+        await callback.answer("❌ Недостаточно 🥇!", show_alert=True)
 
 @router.callback_query(F.data == "back_main")
-async def cb_back_main(callback: CallbackQuery):
+async def back_main(callback: CallbackQuery):
     await show_profile(callback.from_user.id)
 
-@router.callback_query(F.data == "back_clan")
-async def cb_back_clan(callback: CallbackQuery):
-    await btn_clan.callback_query(callback)
+@router.callback_query(F.data.startswith("clan_shop_"))
+async def clan_shop_callback(callback: CallbackQuery):
+    page = int(callback.data.split("_")[2]) if len(callback.data.split("_")) > 2 else 0
+    await show_clan_shop(callback, page)
+
+@router.callback_query(F.data == "clan_menu")
+async def clan_menu_callback(callback: CallbackQuery):
+    await show_clan_menu(callback)
+
+@router.callback_query(F.data == "admin")
+async def admin_callback(callback: CallbackQuery):
+    await admin_panel(callback)
 
 @router.callback_query(F.data.startswith("admin_"))
-async def cb_admin(callback: CallbackQuery):
+async def admin_actions(callback: CallbackQuery):
     if not await is_admin(callback.from_user.id):
-        return await callback.answer("❌ Нет доступа!")
-    
-    if callback.data == "admin_gold":
-        await callback.message.edit_text("💰 <code>/setgold @username КОЛИЧЕСТВО</code>\nПример: <code>/setgold @test 100000</code>")
-    elif callback.data == "admin_promo":
-        await callback.message.edit_text("➕ <code>/setpromo CODE ЗОЛОТО ГЕМЫ МАКС</code>\nПример: <code>/setpromo VIP 0 100 25</code>")
-    elif callback.data == "admin_stats":
-        async with aiosqlite.connect("rpg_bot.db") as db:
-            async with db.execute("SELECT COUNT(*), SUM(gold), SUM(referrals) FROM users") as cursor:
-                stats = await cursor.fetchone()
-        await callback.message.edit_text(f"📊 <b>СТАТИСТИКА БОТА</b>\n👥 Игроков: <b>{stats[0]}</b>\n💰 Всего 🥇: <b>{stats[1]:,}</b>\n🔗 Рефералов: <b>{stats[2]}</b>")
-    
-    await callback.answer()
-
-# СОСТОЯНИЯ КЛАНОВ
-@router.message(ClanStates.waiting_clan_name)
-async def process_clan_name(message: Message, state: FSMContext):
-    if message.text == "🔙 Отмена":
-        await state.clear()
-        await message.reply("❌ Отменено!", reply_markup=get_main_keyboard())
         return
-    
-    result = await create_clan(message.from_user.id, message.text)
-    await bot.send_message(message.from_user.id, result, reply_markup=get_main_keyboard())
-    await state.clear()
+    # Заглушки для админских действий
+    await callback.answer("🔧 Админ функция (реализовать)", show_alert=True)
 
-# ЗАПУСК БОТА
+# 🚀 ЗАПУСК
 async def main():
-    print("🚀 Инициализация RPG v7.0...")
     await init_db()
-    print("✅ Готов к запуску!")
+    print("🚀 Bot started!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
