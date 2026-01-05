@@ -1660,10 +1660,14 @@ async def process_promo(message: Message, state: FSMContext):
 # ====================================================================
 # ГЛОБАЛЬНЫЕ ОБРАБОТЧИКИ (строки 4310-4400)
 # ====================================================================
-@dp.callback_query(F.data not in [
+@dp.callback_query(~F.data.in_([
     'main_menu', 'profile', 'shop_menu', 'duels_menu', 'pve_menu', 'inventory',
     'clans_menu', 'bank_menu', 'top_menu', 'auction_menu', 'daily_bonus'
-])
+]))
+async def handle_unknown_callback(callback: CallbackQuery):
+    """Обработчик неизвестных callback'ов"""
+    logger.warning(f"Неизвестный callback от {callback.from_user.id}: {callback.data}")
+    await callback.answer("❌ Неизвестное действие", show_alert=True)
 async def unknown_callback(callback: CallbackQuery):
     """Неизвестные callback"""
     await callback.answer("❓ Используйте кнопки меню!")
