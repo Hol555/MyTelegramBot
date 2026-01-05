@@ -26,8 +26,8 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.enums import ParseMode
 
 # ======================== КОНФИГУРАЦИЯ ========================
-BOT_TOKEN = "7766252776:AAFQ4k5yYk6Y7z8Y9z0Y1z2Y3z4Y5z6Y7z8Y9z0"  # ← ВАШ ТОКЕН
-ADMIN_IDS = [123456789, 987654321]  # ← ВАШИ ID
+BOT_TOKEN = "7766252776:AAF-Eif3iud_CiBPr5RA28auoTTu79dzxFw"  # ← ВАШ ТОКЕН
+ADMIN_IDS = [7591100907]  # ← ВАШИ ID
 DB_PATH = "rpg_bot.db"
 
 # Логирование
