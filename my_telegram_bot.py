@@ -800,7 +800,7 @@ async def cmd_start(message: Message, state: FSMContext):
     welcome_text = f"""
 🏟️ **Добро пожаловать в RPG Бот, {user['first_name']}!**
 
-{online_status} **Уровень:** `{user['level']}`
+🟢 **Уровень:** `{user['level']}`
 {hp_status}
 ⚔️ **Атака:** `{user['attack']}` | 🛡️ **Защита:** `{user['defense']}`
 💰 **Золото:** `{user['gold']}` | 💎 **Кристаллы:** `{user['crystals']}`
