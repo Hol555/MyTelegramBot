@@ -1,6 +1,5 @@
-python-telegram-bot==20.4
-aiosqlite
+python-telegram-bot==20.7
+aiohttp==3.9.1
 python-dotenv==1.0.0
-nest_asyncio
-aiogram==3.13.1
-aiosqlite==0.21.0
+asyncio==3.4.3
+dataclasses==0.6  # Для Python < 3.7
