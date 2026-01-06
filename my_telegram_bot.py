@@ -5,6 +5,7 @@ OSINT Bot v5.0 - Python 3.13 + PTB v13.15 ✅
 ✅ Rate limiting ✅ Inline ✅ Admin
 """
 
+import imghdr
 import logging
 import os
 import re
