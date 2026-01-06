@@ -1,20 +1,20 @@
+#!/usr/bin/env python3
 """
-OSINT Bot v5.0 - Python 3.13 + PTB v13.15 ✅
-✅ NO imghdr dependency
-✅ Updater API (stable)
-✅ Rate limiting ✅ Inline ✅ Admin
+OSINT Bot v5.0 FINAL - Python 3.13 + PTB v13.15
+✅ NO imghdr ❌ NO syntax errors
 """
 
-import Update
-import imghdr
 import logging
 import os
 import re
 from typing import List
 import aiohttp
 import asyncio
+
+# ✅ ПРАВИЛЬНЫЙ IMPORT v13.15
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackQueryHandler, CallbackContext
+
 from dataclasses import dataclass
 from dotenv import load_dotenv
 from urllib.parse import quote
@@ -23,7 +23,10 @@ import time
 
 load_dotenv()
 
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', 
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv('BOT_TOKEN')
@@ -61,8 +64,7 @@ class RateLimiter:
         return self.limit - len(user_requests)
 
 class OSINTBot:
-    def __init__(self, token: str, admin_username: str):
-        self.token = token
+    def __init__(self, admin_username: str):
         self.admin_username = admin_username
         self.session = None
         self.user_limiters = {}
@@ -76,24 +78,15 @@ class OSINTBot:
     def is_admin(self, username: str) -> bool:
         return username.lower() == self.admin_username
     
-    def init_session(self):
-        if self.session is None or self.session.closed:
-            timeout = aiohttp.ClientTimeout(total=30)
-            self.session = aiohttp.ClientSession(timeout=timeout)
-    
-    async def close_session(self):
-        if self.session and not self.session.closed:
-            await self.session.close()
-    
     def google_dorks(self, query: str) -> List[SearchResult]:
         dorks = [
             f'"{query}" filetype:pdf',
-            f'"{query}" site:vk.com',
+            f'"{query}" site:vk.com', 
             f'"{query}" inurl:admin',
             f'"{query}" filetype:sql'
         ]
         return [SearchResult('Google Dorks', dork[:50], 
-                           f"https://google.com/search?q={quote(dork)}", 'Dork') for dork in dorks]
+                           f"https://google.com/search?q={quote(dork)}", '') for dork in dorks]
     
     def social_search(self, query: str) -> List[SearchResult]:
         sources = [
@@ -102,40 +95,34 @@ class OSINTBot:
             ('VK', f'https://vk.com/search?c[q]={quote(query)}'),
             ('Telegram', f'https://t.me/search?q={quote(query)}')
         ]
-        return [SearchResult(source, f'{source} search', url, 'Social') for source, url in sources]
+        return [SearchResult(source, f'{source} search', url, '') for source, url in sources]
     
     def email_search(self, query: str) -> List[SearchResult]:
         email_match = re.search(r'[\w\.-]+@[\w\.-]+\.[a-zA-Z]{2,}', query)
         if email_match:
             email = email_match.group()
             return [
-                SearchResult('Hunter.io', email, f'https://hunter.io/search/{quote(email)}', 'Email'),
-                SearchResult('LeakCheck', email, f'https://leakcheck.io/#/{quote(email)}', 'Leaks')
+                SearchResult('Hunter.io', email, f'https://hunter.io/search/{quote(email)}', ''),
+                SearchResult('LeakCheck', email, f'https://leakcheck.io/#/{quote(email)}', '')
             ]
         return []
     
     def whois_search(self, domain: str) -> List[SearchResult]:
         return [
-            SearchResult('WHOIS', domain, f'https://whois.com/whois/{quote(domain)}', 'Domain'),
-            SearchResult('ViewDNS', domain, f'https://viewdns.info/iph/?domain={quote(domain)}', 'DNS')
+            SearchResult('WHOIS', domain, f'https://whois.com/whois/{quote(domain)}', ''),
+            SearchResult('ViewDNS', domain, f'https://viewdns.info/iph/?domain={quote(domain)}', '')
         ]
     
     async def search(self, query: str, deep: bool = False) -> List[SearchResult]:
-        self.init_session()
         all_results = []
         
-        tasks = [
-            asyncio.to_thread(self.google_dorks, query),
-            asyncio.to_thread(self.social_search, query),
-            asyncio.to_thread(self.email_search, query)
-        ]
+        # Синхронные поиски
+        all_results.extend(self.google_dorks(query))
+        all_results.extend(self.social_search(query))
+        all_results.extend(self.email_search(query))
         
         if deep:
-            tasks.append(asyncio.to_thread(self.multi_engine_search, query))
-        
-        results = await asyncio.gather(*tasks)
-        for rlist in results:
-            all_results.extend(rlist)
+            all_results.extend(self.multi_engine_search(query))
         
         return all_results[:12]
     
@@ -145,28 +132,30 @@ class OSINTBot:
             'Bing': 'https://bing.com/search?q=',
             'DuckDuckGo': 'https://duckduckgo.com/?q='
         }
-        return [SearchResult(name, f'{name} results', f"{url}{quote(query)}", 'Engine') 
+        return [SearchResult(name, f'{name} results', f"{url}{quote(query)}", '') 
                 for name, url in engines.items()]
 
-# ✅ v13.15 HANDLERS (NO ASYNC PROBLEMS)
+bot_instance = None
+
 def start(update: Update, context: CallbackContext):
     user = update.effective_user
     username = f"@{user.username}" if user.username else user.first_name
     is_admin = bot_instance.is_admin(username)
     
-    keyboard = [[InlineKeyboardButton("🔍 Быстрый поиск", callback_data="quick")],
-                [InlineKeyboardButton("🚀 Глубокий", callback_data="deep")],
-                [InlineKeyboardButton("📧 Email", callback_data="email")],
-                [InlineKeyboardButton("🌐 Домен", callback_data="whois")]]
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔍 Быстрый поиск", callback_data="quick")],
+        [InlineKeyboardButton("🚀 Глубокий", callback_data="deep")],
+        [InlineKeyboardButton("📧 Email", callback_data="email")],
+        [InlineKeyboardButton("🌐 Домен", callback_data="whois")]
+    ])
     
     update.message.reply_text(
         f"🤖 **OSINT Bot v5.0**\n"
         f"👤 {username} {'👑' if is_admin else ''}\n\n"
-        f"`/search запрос`\n"
-        f"`/stats`\n"
+        f"`/search запрос`\n`/stats`\n"
         f"Лимит: {SEARCH_LIMIT}/час",
         parse_mode='Markdown',
-        reply_markup=InlineKeyboardMarkup(keyboard),
+        reply_markup=keyboard,
         disable_web_page_preview=True
     )
 
@@ -204,15 +193,15 @@ def search_cmd(update: Update, context: CallbackContext, deep: bool = False):
         update.message.reply_text(f"⏳ Лимит! Осталось: `{remaining}`")
         return
     
-    context.bot.send_message(chat_id=update.effective_chat.id, text=f"🔍 Поиск: `{query}`")
+    update.message.reply_text(f"🔍 Поиск: `{query}`")
     
+    # Async search в отдельном потоке
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    try:
-        results = loop.run_until_complete(bot_instance.search(query, deep and is_admin))
-        send_results(update, results, is_admin)
-    finally:
-        loop.close()
+    results = loop.run_until_complete(bot_instance.search(query, deep and is_admin))
+    loop.close()
+    
+    send_results(update, results, is_admin)
 
 def button_cb(update: Update, context: CallbackContext):
     query = update.callback_query
@@ -240,20 +229,15 @@ def button_cb(update: Update, context: CallbackContext):
         context.user_data['deep'] = mode[1] if isinstance(mode, tuple) else False
 
 def handle_message(update: Update, context: CallbackContext):
-    user = update.effective_user
-    username = f"@{user.username}" if user.username else user.first_name
-    user_id = user.id
-    is_admin = bot_instance.is_admin(username)
-    
     mode = context.user_data.get('mode')
     query_text = update.message.text.strip()
     
     if mode == 'email':
         results = bot_instance.email_search(query_text)
-        send_results(update, results, is_admin)
+        send_results(update, results, bot_instance.is_admin(f"@{update.effective_user.username}" or ""))
     elif mode == 'whois':
         results = bot_instance.whois_search(query_text)
-        send_results(update, results, is_admin)
+        send_results(update, results, bot_instance.is_admin(f"@{update.effective_user.username}" or ""))
     elif mode in ['quick', 'deep']:
         context.args = [query_text]
         search_cmd(update, context, context.user_data.get('deep', False))
@@ -272,25 +256,24 @@ def send_results(update: Update, results: List[SearchResult], is_admin: bool):
         msg += f"📄 {r.title[:60]}\n"
         msg += f"[🔗 {r.url[:50]}]({r.url})\n\n"
     
-    # Разбивка
     messages = [msg[i:i+3800] for i in range(0, len(msg), 3800)]
     for m in messages:
         update.message.reply_text(m, parse_mode='Markdown', disable_web_page_preview=True)
 
-# ✅ MAIN v13.15 (Python 3.13 PERFECT)
 def main():
     global bot_instance
     
     if not BOT_TOKEN:
-        print("❌ BOT_TOKEN не найден!")
+        print("❌ BOT_TOKEN не найден в .env!")
         return
     
     print("🔧 OSINT Bot v5.0 - Python 3.13 + PTB v13.15")
-    bot_instance = OSINTBot(BOT_TOKEN, ADMIN_USERNAME)
+    bot_instance = OSINTBot(ADMIN_USERNAME)
     
     updater = Updater(BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
     
+    # ✅ v13.15 Handlers
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("search", lambda u,c: search_cmd(u, c, False)))
     dp.add_handler(CommandHandler("deep", lambda u,c: search_cmd(u, c, True)))
@@ -298,7 +281,7 @@ def main():
     dp.add_handler(CallbackQueryHandler(button_cb))
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
     
-    print("🚀 **BOT ЗАПУЩЕН!**")
+    print("🚀 BOT ЗАПУЩЕН!")
     print(f"👑 Админ: {ADMIN_USERNAME}")
     
     updater.start_polling(clean=True)
